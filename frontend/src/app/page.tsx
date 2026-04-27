@@ -1,18 +1,20 @@
 'use client';
 
 import React, { useEffect, useCallback } from 'react';
-import { Typography, Table, Card, Space, Button, Tag, message, Modal } from 'antd';
+import { Typography, Table, Card, Space, Button, Tag, message, Modal, Row, Col, Statistic } from 'antd';
 import {
   FileTextOutlined,
   DeleteOutlined,
   FolderOpenOutlined,
+  UploadOutlined,
+  SearchOutlined,
+  FileExcelOutlined,
+  BookOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { useRouter } from 'next/navigation';
 import { useDocumentStore } from '@/lib/stores/documentStore';
-import { uploadDocument } from '@/lib/api';
 import type { DocumentListItem } from '@/types/document';
-import LoadingSpinner from '@/components/common/LoadingSpinner';
 import FileUpload from '@/components/upload/FileUpload';
 import type { UploadFile } from 'antd';
 
@@ -29,7 +31,7 @@ const fileTypeColorMap: Record<string, string> = {
 
 export default function DashboardPage() {
   const router = useRouter();
-  const { documents, isLoading, error, fetchDocuments, deleteDocument: deleteDoc } = useDocumentStore();
+  const { documents, isLoading, fetchDocuments, deleteDocument: deleteDoc } = useDocumentStore();
 
   useEffect(() => {
     fetchDocuments();
@@ -76,6 +78,8 @@ export default function DashboardPage() {
     [deleteDoc],
   );
 
+  const recentDocs = documents.slice(0, 5);
+
   const columns: ColumnsType<DocumentListItem> = [
     {
       title: '파일명',
@@ -109,24 +113,13 @@ export default function DashboardPage() {
     {
       title: '액션',
       key: 'action',
-      width: 150,
+      width: 120,
       render: (_: unknown, record: DocumentListItem) => (
         <Space>
-          <Button
-            type="link"
-            size="small"
-            icon={<FolderOpenOutlined />}
-            onClick={() => handleOpen(record)}
-          >
+          <Button type="link" size="small" icon={<FolderOpenOutlined />} onClick={() => handleOpen(record)}>
             열기
           </Button>
-          <Button
-            type="link"
-            size="small"
-            danger
-            icon={<DeleteOutlined />}
-            onClick={() => handleDelete(record)}
-          >
+          <Button type="link" size="small" danger icon={<DeleteOutlined />} onClick={() => handleDelete(record)}>
             삭제
           </Button>
         </Space>
@@ -134,35 +127,108 @@ export default function DashboardPage() {
     },
   ];
 
-  if (isLoading && documents.length === 0) {
-    return <LoadingSpinner tip="문서 목록을 불러오는 중..." />;
-  }
-
   return (
     <Space direction="vertical" size="large" style={{ width: '100%' }}>
       <Title level={3}>대시보드</Title>
 
-      <Card className="dashboard-card">
+      {/* 통계 카드 */}
+      <Row gutter={16}>
+        <Col xs={24} sm={8}>
+          <Card hoverable onClick={() => router.push('/documents')}>
+            <Statistic
+              title="전체 문서"
+              value={documents.length}
+              prefix={<FileTextOutlined />}
+              suffix="건"
+            />
+          </Card>
+        </Col>
+        <Col xs={24} sm={8}>
+          <Card hoverable onClick={() => router.push('/documents')}>
+            <Statistic
+              title="HWP/HWPX 문서"
+              value={documents.filter(d => ['hwp', 'hwpx'].includes(d.file_type?.toLowerCase())).length}
+              prefix={<FileExcelOutlined />}
+              suffix="건"
+            />
+          </Card>
+        </Col>
+        <Col xs={24} sm={8}>
+          <Card hoverable onClick={() => router.push('/law')}>
+            <Statistic
+              title="법률 검색"
+              value="바로가기"
+              prefix={<BookOutlined />}
+              valueStyle={{ fontSize: 18 }}
+            />
+          </Card>
+        </Col>
+      </Row>
+
+      {/* 퀵 액션 */}
+      <Card title="빠른 작업">
+        <Row gutter={[16, 16]}>
+          <Col xs={24} sm={8}>
+            <Button
+              type="primary"
+              icon={<UploadOutlined />}
+              size="large"
+              block
+              onClick={() => router.push('/documents')}
+            >
+              문서 업로드
+            </Button>
+          </Col>
+          <Col xs={24} sm={8}>
+            <Button
+              icon={<SearchOutlined />}
+              size="large"
+              block
+              onClick={() => router.push('/law')}
+            >
+              법률 검색
+            </Button>
+          </Col>
+          <Col xs={24} sm={8}>
+            <Button
+              icon={<FileTextOutlined />}
+              size="large"
+              block
+              onClick={() => router.push('/documents')}
+            >
+              문서 목록 보기
+            </Button>
+          </Col>
+        </Row>
+      </Card>
+
+      {/* 파일 업로드 */}
+      <Card title="파일 업로드">
         <FileUpload
           onUploadComplete={handleUploadComplete}
           acceptTypes={['.hwp', '.hwpx', '.xlsx', '.xls', '.docx', '.doc']}
         />
       </Card>
 
-      {error && (
-        <Card>
-          <Typography.Text type="danger">{error}</Typography.Text>
-        </Card>
-      )}
-
-      <Card title="최근 문서" className="dashboard-card">
+      {/* 최근 문서 (5건만) */}
+      <Card
+        title="최근 문서"
+        extra={
+          documents.length > 5 ? (
+            <Button type="link" onClick={() => router.push('/documents')}>
+              전체 보기 →
+            </Button>
+          ) : null
+        }
+      >
         <Table<DocumentListItem>
           columns={columns}
-          dataSource={documents}
+          dataSource={recentDocs}
           rowKey="id"
           pagination={false}
           size="middle"
           loading={isLoading}
+          locale={{ emptyText: '업로드된 문서가 없습니다.' }}
         />
       </Card>
     </Space>

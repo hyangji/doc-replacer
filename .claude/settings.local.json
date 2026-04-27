@@ -13,7 +13,15 @@
       "Bash(python -m pytest tests/ -v --tb=short)",
       "Bash(DATABASE_URL=\"sqlite+aiosqlite:///:memory:\" python -m pytest tests/ -v --tb=short)",
       "Bash(DATABASE_URL=\"sqlite+aiosqlite:///:memory:\" python -c \"from app.services.excel_service import map_excel_to_tables; print\\('ok'\\)\")",
-      "Bash(DATABASE_URL=\"sqlite+aiosqlite:///:memory:\" python -c \"import app.services.excel_service; print\\(dir\\(app.services.excel_service\\)\\)\")"
+      "Bash(DATABASE_URL=\"sqlite+aiosqlite:///:memory:\" python -c \"import app.services.excel_service; print\\(dir\\(app.services.excel_service\\)\\)\")",
+      "Bash(netstat -ano)",
+      "Bash(vercel --yes --scope rkdgidwl-4167s-projects)",
+      "Bash(curl:*)",
+      "Bash(vercel deploy:*)",
+      "Bash(vercel logs:*)",
+      "Bash(vercel inspect:*)",
+      "Bash(vercel env:*)",
+      "Bash(npx next:*)"
     ]
   }
 }

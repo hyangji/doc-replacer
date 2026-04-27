@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Query
 from pydantic import BaseModel
 
 from app.services.law_service import LawApiError, LawService
@@ -67,10 +67,8 @@ async def search_law(
 ) -> LawSearchResponse:
     try:
         results = await law_service.search_law(query, search_type, page, display)
-    except LawApiError as e:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e)
-        )
+    except LawApiError:
+        return LawSearchResponse(query=query, results=[], total_count=0)
     return LawSearchResponse(
         query=query,
         results=[LawSearchItem(**r) for r in results],
@@ -88,10 +86,8 @@ async def get_law_detail(
 ) -> LawDetailResponse:
     try:
         detail = await law_service.get_law_detail(law_id)
-    except LawApiError as e:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e)
-        )
+    except LawApiError:
+        return LawDetailResponse(law_name="", law_id=law_id, articles=[])
     return LawDetailResponse(**detail)
 
 
@@ -107,8 +103,6 @@ async def verify_law(
         result = await law_service.verify_law_reference(
             body.law_name, body.article_number
         )
-    except LawApiError as e:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e)
-        )
+    except LawApiError:
+        return LawVerifyResult(exists=False)
     return LawVerifyResult(**result)

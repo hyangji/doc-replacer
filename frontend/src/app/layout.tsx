@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import { AntdRegistry } from '@ant-design/nextjs-registry';
 import './globals.css';
 import RootLayoutClient from './RootLayoutClient';
 
@@ -15,7 +16,9 @@ export default function RootLayout({
   return (
     <html lang="ko">
       <body>
-        <RootLayoutClient>{children}</RootLayoutClient>
+        <AntdRegistry>
+          <RootLayoutClient>{children}</RootLayoutClient>
+        </AntdRegistry>
       </body>
     </html>
   );

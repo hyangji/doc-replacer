@@ -3,7 +3,7 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     # Database
-    DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/doc_replacer"
+    DATABASE_URL: str = "sqlite+aiosqlite:///./doc_replacer.db"
 
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"

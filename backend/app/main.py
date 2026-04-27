@@ -5,12 +5,18 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.routers import documents_router, law_router, spellcheck_router
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
+    try:
+        from app.database import engine
+        from app.models.document import Base
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+    except Exception:
+        pass
     yield
 
 
@@ -23,15 +29,19 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-app.include_router(documents_router)
-app.include_router(law_router)
-app.include_router(spellcheck_router)
+try:
+    from app.routers import documents_router, law_router, spellcheck_router
+    app.include_router(documents_router)
+    app.include_router(law_router)
+    app.include_router(spellcheck_router)
+except Exception:
+    pass
 
 
 @app.get("/api/health")

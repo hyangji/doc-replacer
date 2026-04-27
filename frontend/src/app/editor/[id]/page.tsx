@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState, useCallback } from 'react';
 import { useParams } from 'next/navigation';
-import { message, Modal, Tabs } from 'antd';
+import { Alert, message, Modal, Tabs } from 'antd';
 import { EditOutlined, DiffOutlined, FileExcelOutlined } from '@ant-design/icons';
 import DocumentEditor from '@/components/editor/DocumentEditor';
 import DiffViewer from '@/components/diff/DiffViewer';
@@ -122,13 +122,8 @@ export default function EditorPage() {
     return <LoadingSpinner tip="문서를 불러오는 중..." />;
   }
 
-  if (error && !currentDocument) {
-    return (
-      <div style={{ padding: 24, textAlign: 'center', color: '#ff4d4f' }}>
-        {error}
-      </div>
-    );
-  }
+  // Show error as a banner instead of blocking the entire page.
+  // The editor UI will still render below so users can start working.
 
   const tabItems = [
     {
@@ -198,6 +193,17 @@ export default function EditorPage() {
           { title: currentDocument?.original_filename ?? '문서 편집기' },
         ]}
       />
+
+      {error && !currentDocument && (
+        <Alert
+          message="문서 로드 실패"
+          description={error}
+          type="error"
+          showIcon
+          closable
+          style={{ marginBottom: 16 }}
+        />
+      )}
 
       <Tabs
         activeKey={activeTab}

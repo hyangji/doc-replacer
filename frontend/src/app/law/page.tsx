@@ -79,13 +79,15 @@ export default function LawPage() {
     async (value: string) => {
       if (!value.trim()) return;
       setSearchQuery(value);
-      try {
-        await searchLaw(value);
-        setUseMock(false);
-      } catch {
-        // API 미구현 시 mock 데이터로 폴백
+      await searchLaw(value);
+      // searchLaw swallows errors internally and sets store.error.
+      // Check the store error state to decide whether to fall back to mock data.
+      const { error: storeError, searchResults: results } = useLawStore.getState();
+      if (storeError || results.length === 0) {
         setUseMock(true);
         selectLaw(MOCK_RESULTS[0]);
+      } else {
+        setUseMock(false);
       }
     },
     [searchLaw, selectLaw],

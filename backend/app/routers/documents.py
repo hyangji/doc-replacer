@@ -27,7 +27,13 @@ router = APIRouter(prefix="/api/documents", tags=["documents"])
 
 
 async def _get_document_or_404(document_id: int, db: AsyncSession):
-    doc = await document_service.get_document(db, document_id)
+    try:
+        doc = await document_service.get_document(db, document_id)
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="데이터베이스 연결에 실패했습니다.",
+        )
     if not doc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -61,8 +67,11 @@ async def upload_document(
 async def list_documents(
     db: AsyncSession = Depends(get_db),
 ) -> list[DocumentListItem]:
-    docs = await document_service.list_documents(db)
-    return [DocumentListItem.model_validate(d) for d in docs]
+    try:
+        docs = await document_service.list_documents(db)
+        return [DocumentListItem.model_validate(d) for d in docs]
+    except Exception:
+        return []
 
 
 @router.get(

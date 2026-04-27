@@ -14,7 +14,9 @@ import type {
 import type { LawSearchResponse, LawVerifyResult } from '@/types/law';
 
 const api = axios.create({
-  baseURL: '/api',
+  baseURL: process.env.NEXT_PUBLIC_API_URL
+    ? `${process.env.NEXT_PUBLIC_API_URL}/api`
+    : '/api',
 });
 
 api.interceptors.response.use(

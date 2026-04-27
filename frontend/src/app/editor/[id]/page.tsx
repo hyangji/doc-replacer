@@ -1,0 +1,210 @@
+'use client';
+
+import React, { useEffect, useState, useCallback } from 'react';
+import { useParams } from 'next/navigation';
+import { message, Modal, Tabs } from 'antd';
+import { EditOutlined, DiffOutlined, FileExcelOutlined } from '@ant-design/icons';
+import DocumentEditor from '@/components/editor/DocumentEditor';
+import DiffViewer from '@/components/diff/DiffViewer';
+import ExcelUpload from '@/components/upload/ExcelUpload';
+import PageHeader from '@/components/common/PageHeader';
+import LoadingSpinner from '@/components/common/LoadingSpinner';
+import { useDocumentStore } from '@/lib/stores/documentStore';
+import * as api from '@/lib/api';
+
+export default function EditorPage() {
+  const params = useParams();
+  const documentId = Number(params.id);
+
+  const {
+    currentDocument,
+    isLoading,
+    error,
+    diffData,
+    fetchDocument,
+    saveDocument,
+    revertDocument,
+    setDiffData,
+  } = useDocumentStore();
+
+  const [activeTab, setActiveTab] = useState('edit');
+  const [editorContent, setEditorContent] = useState('');
+
+  useEffect(() => {
+    if (documentId) {
+      fetchDocument(documentId);
+    }
+  }, [documentId, fetchDocument]);
+
+  // Sync editor content when document loads
+  useEffect(() => {
+    if (currentDocument?.content_text != null) {
+      setEditorContent(currentDocument.content_text);
+    }
+  }, [currentDocument?.content_text]);
+
+  const handleSave = useCallback(
+    async (content: string) => {
+      try {
+        await saveDocument(documentId, content);
+        message.success('저장되었습니다.');
+      } catch {
+        // error already shown by interceptor
+      }
+    },
+    [documentId, saveDocument],
+  );
+
+  const handleRevert = useCallback(() => {
+    if (!currentDocument || currentDocument.versions.length === 0) {
+      message.warning('되돌릴 버전이 없습니다.');
+      return;
+    }
+    const latestVersion = currentDocument.versions[0];
+    Modal.confirm({
+      title: '문서 되돌리기',
+      content: `버전 ${latestVersion.version_number}(으)로 되돌리시겠습니까?`,
+      okText: '되돌리기',
+      cancelText: '취소',
+      async onOk() {
+        try {
+          await revertDocument(documentId, latestVersion.version_number);
+          message.success('문서가 되돌려졌습니다.');
+        } catch {
+          // error already shown by interceptor
+        }
+      },
+    });
+  }, [documentId, currentDocument, revertDocument]);
+
+  const handleConvert = useCallback(
+    async (format: 'docx' | 'pdf') => {
+      try {
+        message.loading({ content: '변환 중...', key: 'convert' });
+        const blob = await api.convertDocument(documentId, format);
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${currentDocument?.original_filename ?? 'document'}.${format}`;
+        a.click();
+        URL.revokeObjectURL(url);
+        message.success({ content: '변환 완료. 다운로드가 시작됩니다.', key: 'convert' });
+      } catch {
+        message.error({ content: '변환에 실패했습니다.', key: 'convert' });
+      }
+    },
+    [documentId, currentDocument],
+  );
+
+  const handleExcelUploadComplete = useCallback(() => {
+    api.getDiff(documentId)
+      .then((diff) => {
+        setDiffData(diff);
+        setActiveTab('diff');
+        // Refresh document to get updated content
+        fetchDocument(documentId);
+      })
+      .catch(() => {
+        // error handled by interceptor
+      });
+  }, [documentId, setDiffData, fetchDocument]);
+
+  const handleDiffSave = useCallback(async () => {
+    try {
+      await saveDocument(documentId, editorContent);
+      message.success('저장되었습니다.');
+    } catch {
+      // error already shown by interceptor
+    }
+  }, [documentId, editorContent, saveDocument]);
+
+  if (isLoading && !currentDocument) {
+    return <LoadingSpinner tip="문서를 불러오는 중..." />;
+  }
+
+  if (error && !currentDocument) {
+    return (
+      <div style={{ padding: 24, textAlign: 'center', color: '#ff4d4f' }}>
+        {error}
+      </div>
+    );
+  }
+
+  const tabItems = [
+    {
+      key: 'edit',
+      label: (
+        <span>
+          <EditOutlined /> 편집
+        </span>
+      ),
+      children: (
+        <div style={{ height: 'calc(100vh - 220px)' }}>
+          <DocumentEditor
+            content={editorContent}
+            onChange={setEditorContent}
+            onSave={handleSave}
+            documentId={String(documentId)}
+          />
+        </div>
+      ),
+    },
+    {
+      key: 'excel',
+      label: (
+        <span>
+          <FileExcelOutlined /> 엑셀 일괄 교체
+        </span>
+      ),
+      children: (
+        <div style={{ padding: 16 }}>
+          <ExcelUpload
+            documentId={String(documentId)}
+            onUploadComplete={handleExcelUploadComplete}
+          />
+        </div>
+      ),
+    },
+    ...(diffData
+      ? [
+          {
+            key: 'diff',
+            label: (
+              <span>
+                <DiffOutlined /> Diff 비교
+              </span>
+            ),
+            children: (
+              <DiffViewer
+                originalContent={diffData.original_text}
+                modifiedContent={diffData.modified_text}
+                originalTitle="원본 문서"
+                modifiedTitle="수정된 문서"
+                onRevertAll={handleRevert}
+                onSave={handleDiffSave}
+              />
+            ),
+          },
+        ]
+      : []),
+  ];
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+      <PageHeader
+        title={currentDocument?.original_filename ?? '문서 편집기'}
+        breadcrumb={[
+          { title: '홈', href: '/' },
+          { title: currentDocument?.original_filename ?? '문서 편집기' },
+        ]}
+      />
+
+      <Tabs
+        activeKey={activeTab}
+        onChange={setActiveTab}
+        items={tabItems}
+        style={{ flex: 1 }}
+      />
+    </div>
+  );
+}

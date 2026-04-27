@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "Bash(python -c \"import ast; import glob; files = glob.glob\\('app/**/*.py', recursive=True\\); errors = []; [errors.append\\(f'{f}: {e}'\\) for f in files for e in [None] if not \\(lambda: \\(ast.parse\\(open\\(f\\).read\\(\\)\\), True\\)[-1] if True else False\\)\\(\\)]; print\\('All files parse OK' if not errors else '\\\\n'.join\\(errors\\)\\)\")",
+      "Bash(python -c ':*)",
+      "Bash(pip install:*)",
+      "Bash(python -c \"import hwpx; print\\(dir\\(hwpx\\)\\)\")",
+      "Bash(npx tsc:*)",
+      "Bash(./node_modules/.bin/tsc --noEmit --pretty)",
+      "Bash(npm install:*)",
+      "Bash(npx -p typescript tsc --noEmit --pretty)",
+      "Bash(python -m pytest tests/ -v --tb=short)",
+      "Bash(DATABASE_URL=\"sqlite+aiosqlite:///:memory:\" python -m pytest tests/ -v --tb=short)",
+      "Bash(DATABASE_URL=\"sqlite+aiosqlite:///:memory:\" python -c \"from app.services.excel_service import map_excel_to_tables; print\\('ok'\\)\")",
+      "Bash(DATABASE_URL=\"sqlite+aiosqlite:///:memory:\" python -c \"import app.services.excel_service; print\\(dir\\(app.services.excel_service\\)\\)\")"
+    ]
+  }
+}

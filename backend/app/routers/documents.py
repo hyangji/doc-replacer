@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -24,6 +25,10 @@ from app.services.diff_service import DiffServiceError
 from app.services.excel_service import ExcelParseError, ExcelServiceError
 
 router = APIRouter(prefix="/api/documents", tags=["documents"])
+
+
+class SaveDocumentRequest(BaseModel):
+    content: str
 
 
 async def _get_document_or_404(document_id: int, db: AsyncSession):
@@ -119,6 +124,19 @@ async def preview_excel_replacement(
         )
 
     return ExcelPreviewResponse(**preview)
+
+
+@router.post(
+    "/{document_id}/excel-upload",
+    response_model=ReplacementResponse,
+    summary="엑셀 파일 업로드 후 일괄 교체 (별칭)",
+)
+async def excel_upload_alias(
+    document_id: int,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+) -> ReplacementResponse:
+    return await replace_from_excel(document_id, file, db)
 
 
 @router.post(
@@ -279,10 +297,15 @@ async def revert_document(
 )
 async def save_document(
     document_id: int,
+    body: SaveDocumentRequest,
     db: AsyncSession = Depends(get_db),
 ) -> DocumentDetail:
     doc = await _get_document_or_404(document_id, db)
-    return DocumentDetail.model_validate(doc)
+    try:
+        updated_doc = await document_service.save_document_content(db, doc, body.content)
+    except DocumentServiceError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    return DocumentDetail.model_validate(updated_doc)
 
 
 @router.post(
@@ -313,3 +336,16 @@ async def list_versions(
     await _get_document_or_404(document_id, db)
     versions = await document_service.get_versions(db, document_id)
     return [VersionSummary.model_validate(v) for v in versions]
+
+
+@router.delete(
+    "/{document_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="문서 삭제",
+)
+async def delete_document(
+    document_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    doc = await _get_document_or_404(document_id, db)
+    await document_service.delete_document(db, doc)

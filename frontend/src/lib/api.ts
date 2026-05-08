@@ -11,7 +11,8 @@ import type {
   ConvertResponse,
   VersionSummary,
 } from '@/types/document';
-import type { LawSearchResponse, LawVerifyResult } from '@/types/law';
+import type { LawSearchResponse, LawVerifyResult, LawDetailResponse } from '@/types/law';
+import type { SpellCheckResponse, LegalTermCheckResponse } from '@/types/spellcheck';
 
 const api = axios.create({
   baseURL: process.env.NEXT_PUBLIC_API_URL
@@ -118,18 +119,35 @@ export async function deleteDocument(id: number): Promise<void> {
 
 // --- Law ---
 
-export async function searchLaw(query: string): Promise<LawSearchResponse> {
+export async function searchLaw(query: string, searchType: string = 'law'): Promise<LawSearchResponse> {
   const { data } = await api.get<LawSearchResponse>('/law/search', {
-    params: { query },
+    params: { query, search_type: searchType },
   });
   return data;
 }
 
-export async function verifyLaw(text: string, lawId?: string): Promise<LawVerifyResult> {
+export async function verifyLaw(lawName: string, articleNumber?: string): Promise<LawVerifyResult> {
   const { data } = await api.post<LawVerifyResult>('/law/verify', {
-    text,
-    law_id: lawId ?? null,
+    law_name: lawName,
+    article_number: articleNumber ?? null,
   });
+  return data;
+}
+
+export async function getLawDetail(lawId: string): Promise<LawDetailResponse> {
+  const { data } = await api.get<LawDetailResponse>(`/law/${lawId}`);
+  return data;
+}
+
+// --- Spell Check ---
+
+export async function checkSpelling(text: string): Promise<SpellCheckResponse> {
+  const { data } = await api.post<SpellCheckResponse>('/spellcheck', { text });
+  return data;
+}
+
+export async function checkLegalTerms(text: string): Promise<LegalTermCheckResponse> {
+  const { data } = await api.post<LegalTermCheckResponse>('/spellcheck/legal-terms', { text });
   return data;
 }
 

@@ -9,6 +9,7 @@ API 응답은 XML 형식이며, httpx async 클라이언트로 호출합니다.
 import logging
 from xml.etree import ElementTree as ET
 
+import defusedxml.ElementTree as SafeET
 import httpx
 
 from app.config import settings
@@ -181,7 +182,7 @@ class LawService:
         results: list[dict] = []
 
         try:
-            root = ET.fromstring(xml_text)
+            root = SafeET.fromstring(xml_text)
         except ET.ParseError as e:
             logger.warning("법령 검색 XML 파싱 실패: %s", e)
             return results
@@ -208,7 +209,7 @@ class LawService:
     def _parse_detail_response(self, xml_text: str, law_id: str) -> dict:
         """Parse the XML detail response for a specific law."""
         try:
-            root = ET.fromstring(xml_text)
+            root = SafeET.fromstring(xml_text)
         except ET.ParseError as e:
             raise LawApiError(f"법령 상세 XML 파싱 실패: {e}")
 

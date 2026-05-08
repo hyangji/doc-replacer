@@ -5,11 +5,40 @@ and batch replacement functionality via the SearchService class.
 """
 
 import re
+import signal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.document import Document, FileType, ReplacementLog, ReplacementType
 from app.services.hwp_service import HwpService
+
+# ReDoS 방지: 정규식 패턴 복잡도 제한
+MAX_REGEX_LENGTH = 500
+DANGEROUS_REGEX_PATTERNS = re.compile(
+    r"(.+\+){2,}|(.+\*){2,}|(\(.+\)\+){2,}|(\(.+\)\*){2,}"
+)
+
+
+def _validate_regex(pattern: str) -> None:
+    """정규식 패턴의 안전성을 검증합니다."""
+    if len(pattern) > MAX_REGEX_LENGTH:
+        raise SearchServiceError(
+            f"정규식 패턴이 너무 깁니다 (최대 {MAX_REGEX_LENGTH}자)."
+        )
+    if DANGEROUS_REGEX_PATTERNS.search(pattern):
+        raise SearchServiceError(
+            "잠재적으로 위험한 정규식 패턴입니다. "
+            "중첩된 반복 수량자(예: (a+)+)는 사용할 수 없습니다."
+        )
+
+
+def _safe_compile(pattern: str, flags: int = 0) -> re.Pattern:
+    """안전하게 정규식을 컴파일합니다."""
+    _validate_regex(pattern)
+    try:
+        return re.compile(pattern, flags)
+    except re.error as e:
+        raise SearchServiceError(f"잘못된 정규식 패턴입니다: {e}")
 
 
 class SearchServiceError(Exception):
@@ -46,11 +75,7 @@ class SearchService:
             return []
 
         flags = 0 if case_sensitive else re.IGNORECASE
-
-        try:
-            pattern = re.compile(query if use_regex else re.escape(query), flags)
-        except re.error as e:
-            raise SearchServiceError(f"잘못된 정규식 패턴입니다: {e}")
+        pattern = _safe_compile(query if use_regex else re.escape(query), flags)
 
         # Pre-compute line starts for O(1) line/column lookup
         line_starts = [0]
@@ -105,11 +130,7 @@ class SearchService:
             (new_text, was_replaced)
         """
         flags = 0 if case_sensitive else re.IGNORECASE
-
-        try:
-            pattern = re.compile(query if use_regex else re.escape(query), flags)
-        except re.error as e:
-            raise SearchServiceError(f"잘못된 정규식 패턴입니다: {e}")
+        pattern = _safe_compile(query if use_regex else re.escape(query), flags)
 
         matches = list(pattern.finditer(text))
         if occurrence >= len(matches):
@@ -139,10 +160,7 @@ class SearchService:
         """
         flags = 0 if case_sensitive else re.IGNORECASE
 
-        try:
-            pattern = re.compile(query if use_regex else re.escape(query), flags)
-        except re.error as e:
-            raise SearchServiceError(f"잘못된 정규식 패턴입니다: {e}")
+        pattern = _safe_compile(query if use_regex else re.escape(query), flags)
 
         new_text, count = pattern.subn(replacement, text)
         return new_text, count

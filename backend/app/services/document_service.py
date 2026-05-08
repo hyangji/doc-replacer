@@ -315,6 +315,26 @@ async def revert_to_version(
     return await _revert(db, document, version_number)
 
 
+# ── Save content ──
+
+
+async def save_document_content(
+    db: AsyncSession,
+    document: Document,
+    content: str,
+) -> Document:
+    """에디터에서 수정한 내용을 HWPX 파일에 저장."""
+    if document.file_type != FileType.HWPX:
+        raise DocumentServiceError("현재 HWPX 파일만 저장을 지원합니다.")
+
+    new_path = await hwp_service.save_file(document.file_path, content)
+    version = await create_version(db, document, new_path, content, "에디터에서 직접 수정")
+
+    # refresh to get updated versions
+    await db.refresh(document)
+    return document
+
+
 # ── Delete ──
 
 

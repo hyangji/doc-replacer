@@ -6,6 +6,7 @@ import {
   HomeOutlined,
   FileTextOutlined,
   SearchOutlined,
+  CheckCircleOutlined,
 } from '@ant-design/icons';
 import { useRouter, usePathname } from 'next/navigation';
 
@@ -15,6 +16,7 @@ const menuItems = [
   { key: '/', icon: <HomeOutlined />, label: '대시보드' },
   { key: '/documents', icon: <FileTextOutlined />, label: '문서 목록' },
   { key: '/law', icon: <SearchOutlined />, label: '법률 검색' },
+  { key: '/spellcheck', icon: <CheckCircleOutlined />, label: '맞춤법 검사' },
 ];
 
 export default function Sidebar() {

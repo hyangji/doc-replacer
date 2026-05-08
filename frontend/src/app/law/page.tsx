@@ -2,21 +2,12 @@
 
 import React, { useState, useCallback } from 'react';
 import {
-  Input,
-  Radio,
-  List,
-  Card,
-  Typography,
-  Button,
-  Empty,
-  Space,
-  Tag,
-  Spin,
+  Input, Radio, List, Card, Typography, Button, Empty, Space, Tag, Spin,
+  Collapse, Alert, Divider,
 } from 'antd';
 import {
-  SearchOutlined,
-  FileTextOutlined,
-  CopyOutlined,
+  SearchOutlined, FileTextOutlined, CopyOutlined,
+  CheckCircleOutlined, CloseCircleOutlined,
 } from '@ant-design/icons';
 import type { RadioChangeEvent } from 'antd';
 import PageHeader from '@/components/common/PageHeader';
@@ -28,70 +19,27 @@ const { Search } = Input;
 
 type SearchType = 'name' | 'article' | 'keyword';
 
-const MOCK_RESULTS: LawSearchItem[] = [
-  {
-    law_id: 'LAW-001',
-    title: '국토의 계획 및 이용에 관한 법률',
-    content_snippet: '제1조(목적) 이 법은 국토의 이용·개발과 보전을 위한 계획의 수립 및 집행 등에 관하여 필요한 사항을 정하여 공공복리의 증진과 국민의 삶의 질 향상에 이바지함을 목적으로 한다.',
-  },
-  {
-    law_id: 'LAW-002',
-    title: '도시개발법',
-    content_snippet: '제1조(목적) 이 법은 도시개발에 필요한 사항을 규정하여 계획적이고 체계적인 도시개발을 도모하고 쾌적한 도시환경의 조성과 공공복리의 증진에 이바지함을 목적으로 한다.',
-  },
-  {
-    law_id: 'LAW-003',
-    title: '도시 및 주거환경정비법',
-    content_snippet: '제1조(목적) 이 법은 도시기능의 회복이 필요하거나 주거환경이 불량한 지역을 계획적으로 정비하고 노후·불량건축물을 효율적으로 개량하기 위하여 필요한 사항을 규정함으로써 도시환경을 개선하고 주거생활의 질을 높이는 데 이바지함을 목적으로 한다.',
-  },
-  {
-    law_id: 'LAW-004',
-    title: '건축법',
-    content_snippet: '제1조(목적) 이 법은 건축물의 대지·구조·설비 기준 및 용도 등을 정하여 건축물의 안전·기능·환경 및 미관을 향상시킴으로써 공공복리의 증진에 이바지함을 목적으로 한다.',
-  },
-  {
-    law_id: 'LAW-005',
-    title: '주택법',
-    content_snippet: '제1조(목적) 이 법은 주택의 건설·공급 및 주택시장의 관리 등에 관한 사항을 정함으로써 국민의 주거안정과 주거수준의 향상에 이바지함을 목적으로 한다.',
-  },
-];
+const SEARCH_TYPE_MAP: Record<SearchType, string> = {
+  name: 'law',
+  article: 'jo',
+  keyword: 'key',
+};
 
 export default function LawPage() {
   const {
-    searchResults,
-    totalCount,
-    selectedLaw,
-    isLoading,
-    searchLaw,
-    selectLaw,
+    searchResults, totalCount, selectedLaw, lawDetail,
+    verifyResult, isLoading,
+    searchLaw, selectLaw, verifyLaw,
   } = useLawStore();
 
   const [searchType, setSearchType] = useState<SearchType>('name');
   const [searchQuery, setSearchQuery] = useState('');
-  const [useMock, setUseMock] = useState(false);
 
-  const displayResults = useMock ? MOCK_RESULTS : searchResults;
-  const displaySelected = useMock
-    ? (selectedLaw ?? MOCK_RESULTS[0])
-    : selectedLaw;
-
-  const handleSearch = useCallback(
-    async (value: string) => {
-      if (!value.trim()) return;
-      setSearchQuery(value);
-      await searchLaw(value);
-      // searchLaw swallows errors internally and sets store.error.
-      // Check the store error state to decide whether to fall back to mock data.
-      const { error: storeError, searchResults: results } = useLawStore.getState();
-      if (storeError || results.length === 0) {
-        setUseMock(true);
-        selectLaw(MOCK_RESULTS[0]);
-      } else {
-        setUseMock(false);
-      }
-    },
-    [searchLaw, selectLaw],
-  );
+  const handleSearch = useCallback(async (value: string) => {
+    if (!value.trim()) return;
+    setSearchQuery(value);
+    await searchLaw(value, SEARCH_TYPE_MAP[searchType]);
+  }, [searchLaw, searchType]);
 
   const handleSearchTypeChange = (e: RadioChangeEvent) => {
     setSearchType(e.target.value as SearchType);
@@ -101,9 +49,20 @@ export default function LawPage() {
     selectLaw(item);
   };
 
+  const handleVerify = useCallback(async () => {
+    if (selectedLaw) {
+      await verifyLaw(selectedLaw.law_name);
+    }
+  }, [selectedLaw, verifyLaw]);
+
   const handleCopyToClipboard = () => {
-    if (displaySelected) {
-      navigator.clipboard.writeText(displaySelected.content_snippet);
+    if (lawDetail && lawDetail.articles.length > 0) {
+      const text = lawDetail.articles
+        .map(a => `${a.number} ${a.title}\n${a.content}`)
+        .join('\n\n');
+      navigator.clipboard.writeText(text);
+    } else if (selectedLaw) {
+      navigator.clipboard.writeText(selectedLaw.law_name);
     }
   };
 
@@ -118,7 +77,7 @@ export default function LawPage() {
       />
 
       <div style={{ display: 'flex', gap: 16, flex: 1, minHeight: 0 }}>
-        {/* 좌측: 검색 영역 (60%) */}
+        {/* 좌측: 검색 영역 */}
         <div style={{ flex: 6, display: 'flex', flexDirection: 'column', gap: 16 }}>
           <Card size="small">
             <Space direction="vertical" style={{ width: '100%' }} size={12}>
@@ -136,11 +95,9 @@ export default function LawPage() {
 
               <Search
                 placeholder={
-                  searchType === 'name'
-                    ? '법령명을 입력하세요 (예: 도시계획법)'
-                    : searchType === 'article'
-                      ? '조문 번호를 입력하세요 (예: 제1조)'
-                      : '키워드를 입력하세요 (예: 도시개발)'
+                  searchType === 'name' ? '법령명을 입력하세요 (예: 도시계획법)' :
+                  searchType === 'article' ? '조문 번호를 입력하세요 (예: 제1조)' :
+                  '키워드를 입력하세요 (예: 도시개발)'
                 }
                 enterButton="검색"
                 size="large"
@@ -156,11 +113,7 @@ export default function LawPage() {
             title={
               <Space>
                 <Text strong>검색 결과</Text>
-                {(displayResults.length > 0 || totalCount > 0) && (
-                  <Tag color="blue">
-                    {useMock ? displayResults.length : totalCount}건
-                  </Tag>
-                )}
+                {totalCount > 0 && <Tag color="blue">{totalCount}건</Tag>}
               </Space>
             }
             style={{ flex: 1, overflow: 'auto' }}
@@ -170,37 +123,33 @@ export default function LawPage() {
               <div style={{ padding: 48, textAlign: 'center' }}>
                 <Spin tip="검색 중..." />
               </div>
-            ) : displayResults.length > 0 ? (
+            ) : searchResults.length > 0 ? (
               <List
-                dataSource={displayResults}
+                dataSource={searchResults}
                 renderItem={(item) => (
                   <List.Item
                     onClick={() => handleSelectLaw(item)}
                     style={{
                       cursor: 'pointer',
                       padding: '12px 16px',
-                      background:
-                        displaySelected?.law_id === item.law_id
-                          ? '#e6f4ff'
-                          : 'transparent',
-                      borderLeft:
-                        displaySelected?.law_id === item.law_id
-                          ? '3px solid #1677ff'
-                          : '3px solid transparent',
+                      background: selectedLaw?.law_id === item.law_id ? '#e6f4ff' : 'transparent',
+                      borderLeft: selectedLaw?.law_id === item.law_id
+                        ? '3px solid #1677ff' : '3px solid transparent',
                     }}
                   >
                     <List.Item.Meta
                       avatar={<FileTextOutlined style={{ fontSize: 20, color: '#1677ff' }} />}
-                      title={
-                        <Text strong>{item.title}</Text>
-                      }
+                      title={<Text strong>{item.law_name}</Text>}
                       description={
-                        <Paragraph
-                          ellipsis={{ rows: 2 }}
-                          style={{ marginBottom: 0, color: '#666' }}
-                        >
-                          {item.content_snippet}
-                        </Paragraph>
+                        <Space size={4}>
+                          {item.law_type && <Tag>{item.law_type}</Tag>}
+                          {item.proclamation_date && (
+                            <Text type="secondary">공포: {item.proclamation_date}</Text>
+                          )}
+                          {item.enforcement_date && (
+                            <Text type="secondary">시행: {item.enforcement_date}</Text>
+                          )}
+                        </Space>
                       }
                     />
                   </List.Item>
@@ -208,75 +157,100 @@ export default function LawPage() {
               />
             ) : (
               <Empty
-                description={
-                  searchQuery
-                    ? '검색 결과가 없습니다.'
-                    : '법령명, 조문, 키워드로 검색해보세요.'
-                }
+                description={searchQuery ? '검색 결과가 없습니다.' : '법령명, 조문, 키워드로 검색해보세요.'}
                 style={{ padding: 48 }}
               />
             )}
           </Card>
         </div>
 
-        {/* 우측: 조문 상세 패널 (40%) */}
+        {/* 우측: 법령 상세 패널 */}
         <div style={{ flex: 4, display: 'flex', flexDirection: 'column' }}>
           <Card
             size="small"
             title={
-              displaySelected ? (
+              selectedLaw ? (
                 <Space>
                   <FileTextOutlined />
-                  <Text strong>{displaySelected.title}</Text>
+                  <Text strong>{selectedLaw.law_name}</Text>
                 </Space>
-              ) : (
-                '조문 상세'
-              )
+              ) : '법령 상세'
             }
             extra={
-              displaySelected && (
+              selectedLaw && (
                 <Space>
-                  <Button
-                    size="small"
-                    icon={<CopyOutlined />}
-                    onClick={handleCopyToClipboard}
-                  >
+                  <Button size="small" icon={<CopyOutlined />} onClick={handleCopyToClipboard}>
                     복사
                   </Button>
-                  <Button
-                    type="primary"
-                    size="small"
-                    disabled
-                  >
-                    문서에 삽입
+                  <Button size="small" onClick={handleVerify}>
+                    인용 검증
                   </Button>
                 </Space>
               )
             }
             style={{ flex: 1, overflow: 'auto' }}
           >
-            {displaySelected ? (
+            {selectedLaw ? (
               <div>
-                <Tag color="blue" style={{ marginBottom: 12 }}>
-                  {displaySelected.law_id}
-                </Tag>
-                <Title level={5}>{displaySelected.title}</Title>
-                <Paragraph
-                  style={{
-                    whiteSpace: 'pre-wrap',
-                    lineHeight: 1.8,
-                    fontSize: 14,
-                    background: '#fafafa',
-                    padding: 16,
-                    borderRadius: 8,
-                    border: '1px solid #f0f0f0',
-                  }}
-                >
-                  {displaySelected.content_snippet}
-                </Paragraph>
+                <Space wrap style={{ marginBottom: 12 }}>
+                  <Tag color="blue">{selectedLaw.law_id}</Tag>
+                  {selectedLaw.law_type && <Tag color="green">{selectedLaw.law_type}</Tag>}
+                  {selectedLaw.proclamation_date && (
+                    <Tag>공포: {selectedLaw.proclamation_date}</Tag>
+                  )}
+                </Space>
+
+                {verifyResult && (
+                  <Alert
+                    type={verifyResult.exists ? 'success' : 'warning'}
+                    showIcon
+                    icon={verifyResult.exists ? <CheckCircleOutlined /> : <CloseCircleOutlined />}
+                    message={verifyResult.exists ? '유효한 법령입니다' : '법령을 찾을 수 없습니다'}
+                    description={
+                      verifyResult.exists ? (
+                        <Space direction="vertical" size={4}>
+                          <Text>정확한 법령명: {verifyResult.correct_name}</Text>
+                          {verifyResult.last_amended && (
+                            <Text>최종 개정: {verifyResult.last_amended}</Text>
+                          )}
+                          <Text>현행 여부: {verifyResult.is_current ? '현행' : '비현행'}</Text>
+                        </Space>
+                      ) : undefined
+                    }
+                    style={{ marginBottom: 12 }}
+                  />
+                )}
+
+                <Divider style={{ margin: '12px 0' }} />
+
+                {lawDetail && lawDetail.articles.length > 0 ? (
+                  <div>
+                    <Title level={5}>조문 ({lawDetail.articles.length}개)</Title>
+                    <Collapse
+                      size="small"
+                      items={lawDetail.articles.map((article, idx) => ({
+                        key: idx,
+                        label: <Text strong>{article.number} {article.title}</Text>,
+                        children: (
+                          <Paragraph style={{
+                            whiteSpace: 'pre-wrap', lineHeight: 1.8, fontSize: 14,
+                          }}>
+                            {article.content}
+                          </Paragraph>
+                        ),
+                      }))}
+                    />
+                  </div>
+                ) : lawDetail ? (
+                  <Empty description="조문 정보가 없습니다." />
+                ) : selectedLaw ? (
+                  <div style={{ padding: 24, textAlign: 'center' }}>
+                    <Spin tip="조문 로딩 중..." />
+                  </div>
+                ) : null}
               </div>
             ) : (
-              <Empty description="좌측에서 법률을 선택하세요." />
+              <Empty description="좌측에서 법령을 선택하세요." />
             )}
           </Card>
         </div>

@@ -14,6 +14,7 @@ import zipfile
 from xml.etree import ElementTree as ET
 
 import aiofiles
+import defusedxml.ElementTree as SafeET
 
 from app.config import settings
 
@@ -238,7 +239,7 @@ class HwpService:
                     data = zf_in.read(item.filename)
 
                     if item.filename in section_files:
-                        root = ET.fromstring(data)
+                        root = SafeET.fromstring(data)
                         t_elements = self._extract_text_elements(root)
                         for t_el in t_elements:
                             if line_idx < len(new_lines):
@@ -265,9 +266,16 @@ class HwpService:
     ) -> list[dict]:
         """Search for text occurrences in a file."""
         self._ensure_hwpx(file_path)
+        from app.services.search_service import _validate_regex
+
         full_text = self._extract_text_sync(file_path)
         flags = 0 if case_sensitive else re.IGNORECASE
-        pattern = re.compile(query if use_regex else re.escape(query), flags)
+        if use_regex:
+            _validate_regex(query)
+        try:
+            pattern = re.compile(query if use_regex else re.escape(query), flags)
+        except re.error as e:
+            raise HwpServiceError(f"잘못된 정규식 패턴입니다: {e}")
 
         matches = []
         for m in pattern.finditer(full_text):
@@ -328,7 +336,7 @@ class HwpService:
             with zipfile.ZipFile(file_path, "r") as zf:
                 for section_file in self._get_section_files(zf):
                     xml_data = zf.read(section_file)
-                    root = ET.fromstring(xml_data)
+                    root = SafeET.fromstring(xml_data)
                     for el in self._extract_text_elements(root):
                         texts.append(el.text)  # type: ignore[arg-type]
         except (zipfile.BadZipFile, ET.ParseError) as e:
@@ -343,7 +351,7 @@ class HwpService:
             with zipfile.ZipFile(file_path, "r") as zf:
                 for section_file in self._get_section_files(zf):
                     xml_data = zf.read(section_file)
-                    root = ET.fromstring(xml_data)
+                    root = SafeET.fromstring(xml_data)
 
                     for el in root.iter():
                         if _get_local_name(el.tag) != "tbl":
@@ -417,7 +425,7 @@ class HwpService:
                         data = zf_in.read(item.filename)
 
                         if item.filename in section_files:
-                            root = ET.fromstring(data)
+                            root = SafeET.fromstring(data)
                             count = self._replace_in_element(
                                 root, old_text, new_text, case_sensitive, use_regex
                             )
@@ -447,8 +455,13 @@ class HwpService:
 
             original = t_elem.text
             if use_regex:
+                from app.services.search_service import _validate_regex
+                _validate_regex(old_text)
                 flags = 0 if case_sensitive else re.IGNORECASE
-                new_val, n = re.subn(old_text, new_text, original, flags=flags)
+                try:
+                    new_val, n = re.subn(old_text, new_text, original, flags=flags)
+                except re.error as e:
+                    raise HwpServiceError(f"잘못된 정규식 패턴입니다: {e}")
             elif case_sensitive:
                 n = original.count(old_text)
                 new_val = original.replace(old_text, new_text)

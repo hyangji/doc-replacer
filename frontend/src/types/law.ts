@@ -1,9 +1,9 @@
-// TypeScript interfaces matching backend law schemas (backend/app/routers/law.py)
-
 export interface LawSearchItem {
   law_id: string;
-  title: string;
-  content_snippet: string;
+  law_name: string;
+  law_type: string;
+  proclamation_date: string;
+  enforcement_date: string;
 }
 
 export interface LawSearchResponse {
@@ -13,12 +13,27 @@ export interface LawSearchResponse {
 }
 
 export interface LawVerifyRequest {
-  text: string;
-  law_id?: string | null;
+  law_name: string;
+  article_number?: string | null;
 }
 
 export interface LawVerifyResult {
-  is_valid: boolean;
-  details: string | null;
-  suggestions: string[];
+  exists: boolean;
+  correct_name: string;
+  is_current: boolean;
+  last_amended: string;
+  article_exists: boolean | null;
+}
+
+export interface LawDetailArticle {
+  number: string;
+  title: string;
+  content: string;
+}
+
+export interface LawDetailResponse {
+  law_name: string;
+  law_id: string;
+  proclamation_date: string;
+  articles: LawDetailArticle[];
 }

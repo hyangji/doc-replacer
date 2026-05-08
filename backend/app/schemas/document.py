@@ -41,7 +41,6 @@ class DocumentDetail(BaseModel):
     filename: str
     original_filename: str
     file_type: str
-    file_path: str
     content_text: str | None = None
     created_at: datetime
     updated_at: datetime

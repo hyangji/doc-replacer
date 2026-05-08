@@ -31,7 +31,7 @@ interface DiffViewerProps {
   originalTitle?: string;
   modifiedTitle?: string;
   onRevertAll?: () => void;
-  onSave?: (modifiedText: string) => void;
+  onSave?: (modifiedText?: string) => void;
   onDownloadReport?: () => void;
   onModifiedTextChange?: (text: string) => void;
 }

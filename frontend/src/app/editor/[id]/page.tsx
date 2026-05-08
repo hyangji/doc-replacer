@@ -110,19 +110,22 @@ export default function EditorPage() {
       });
   }, [documentId, setDiffData, fetchDocument]);
 
-  const handleDiffSave = useCallback(async (textFromDiff: string) => {
-    if (!diffData) return;
+  const handleDiffSave = useCallback(async (textFromDiff?: string) => {
+    if (!diffData) {
+      message.warning('비교할 데이터가 없습니다.');
+      return;
+    }
     try {
       const textToSave = textFromDiff || modifiedDiffText || diffData.modified_text;
-      await saveDocument(documentId, textToSave);
+      await api.saveDocument(documentId, textToSave);
       message.success('저장되었습니다.');
-      fetchDocument(documentId);
+      await fetchDocument(documentId);
     } catch {
-      // error already shown by interceptor
+      message.error('저장에 실패했습니다.');
     }
-  }, [documentId, diffData, modifiedDiffText, saveDocument, fetchDocument]);
+  }, [documentId, diffData, modifiedDiffText, fetchDocument]);
 
-  const handleDownloadReport = useCallback(() => {
+  const handleDownloadReport = useCallback(async () => {
     if (!diffData) return;
 
     const lines: string[] = [];
@@ -137,11 +140,37 @@ export default function EditorPage() {
     lines.push('--- 수정본 ---');
     lines.push(modifiedDiffText ?? diffData.modified_text);
 
-    const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' });
+    const content = lines.join('\n');
+    const defaultName = `변경보고서_${currentDocument?.original_filename ?? 'document'}_v${diffData.version_number}`;
+
+    // File System Access API로 "다른 이름으로 저장" 대화상자 표시
+    if ('showSaveFilePicker' in window) {
+      try {
+        const handle = await (window as unknown as { showSaveFilePicker: (opts: unknown) => Promise<FileSystemFileHandle> }).showSaveFilePicker({
+          suggestedName: defaultName,
+          types: [
+            { description: '텍스트 파일', accept: { 'text/plain': ['.txt'] } },
+            { description: 'CSV 파일', accept: { 'text/csv': ['.csv'] } },
+            { description: '모든 파일', accept: { 'application/octet-stream': ['.doc', '.hwp'] } },
+          ],
+        });
+        const writable = await handle.createWritable();
+        await writable.write(content);
+        await writable.close();
+        message.success('변경 보고서가 저장되었습니다.');
+        return;
+      } catch (e) {
+        // 사용자가 취소한 경우
+        if (e instanceof DOMException && e.name === 'AbortError') return;
+      }
+    }
+
+    // fallback: 브라우저가 showSaveFilePicker를 지원하지 않는 경우
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `변경보고서_${currentDocument?.original_filename ?? 'document'}_v${diffData.version_number}.txt`;
+    a.download = `${defaultName}.txt`;
     a.click();
     URL.revokeObjectURL(url);
     message.success('변경 보고서가 다운로드되었습니다.');

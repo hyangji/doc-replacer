@@ -29,6 +29,7 @@ export default function EditorPage() {
 
   const [activeTab, setActiveTab] = useState('edit');
   const [editorContent, setEditorContent] = useState('');
+  const [modifiedDiffText, setModifiedDiffText] = useState<string | null>(null);
 
   useEffect(() => {
     if (documentId) {
@@ -109,14 +110,42 @@ export default function EditorPage() {
       });
   }, [documentId, setDiffData, fetchDocument]);
 
-  const handleDiffSave = useCallback(async () => {
+  const handleDiffSave = useCallback(async (textFromDiff: string) => {
+    if (!diffData) return;
     try {
-      await saveDocument(documentId, editorContent);
+      const textToSave = textFromDiff || modifiedDiffText || diffData.modified_text;
+      await saveDocument(documentId, textToSave);
       message.success('저장되었습니다.');
+      fetchDocument(documentId);
     } catch {
       // error already shown by interceptor
     }
-  }, [documentId, editorContent, saveDocument]);
+  }, [documentId, diffData, modifiedDiffText, saveDocument, fetchDocument]);
+
+  const handleDownloadReport = useCallback(() => {
+    if (!diffData) return;
+
+    const lines: string[] = [];
+    lines.push('=== 변경 보고서 ===');
+    lines.push(`문서: ${currentDocument?.original_filename ?? ''}`);
+    lines.push(`생성일: ${new Date().toLocaleDateString('ko-KR')}`);
+    lines.push(`버전: ${diffData.version_number}`);
+    lines.push('');
+    lines.push('--- 원본 ---');
+    lines.push(diffData.original_text);
+    lines.push('');
+    lines.push('--- 수정본 ---');
+    lines.push(modifiedDiffText ?? diffData.modified_text);
+
+    const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `변경보고서_${currentDocument?.original_filename ?? 'document'}_v${diffData.version_number}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+    message.success('변경 보고서가 다운로드되었습니다.');
+  }, [diffData, currentDocument, modifiedDiffText]);
 
   if (isLoading && !currentDocument) {
     return <LoadingSpinner tip="문서를 불러오는 중..." />;
@@ -177,6 +206,8 @@ export default function EditorPage() {
                 modifiedTitle="수정된 문서"
                 onRevertAll={handleRevert}
                 onSave={handleDiffSave}
+                onDownloadReport={handleDownloadReport}
+                onModifiedTextChange={setModifiedDiffText}
               />
             ),
           },

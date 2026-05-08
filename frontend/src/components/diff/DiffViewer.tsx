@@ -2,7 +2,7 @@
 
 import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import ReactDiffViewer, { DiffMethod } from 'react-diff-viewer-continued';
-import { Card, Radio, Button, Space, Typography, Table, Tag, Input } from 'antd';
+import { Card, Radio, Button, Space, Typography, Table, Tag } from 'antd';
 import {
   UpOutlined,
   DownOutlined,
@@ -15,7 +15,6 @@ import {
 import type { ColumnsType } from 'antd/es/table';
 
 const { Title, Text } = Typography;
-const { TextArea } = Input;
 
 type ViewMode = 'compare' | 'edit';
 
@@ -320,25 +319,80 @@ export default function DiffViewer({
               fontSize: 13,
               color: '#1677ff',
             }}>
-              {modifiedTitle} (편집 가능)
+              {modifiedTitle} (편집 가능 - 클릭하여 수정)
             </div>
-            <TextArea
-              ref={modifiedRef as unknown as React.Ref<HTMLTextAreaElement>}
-              value={currentModifiedText}
-              onChange={(e) => setModifiedLines(e.target.value.split('\n'))}
+            <div
+              ref={modifiedRef as unknown as React.RefObject<HTMLDivElement>}
               onScroll={handleModifiedScroll}
               style={{
                 flex: 1,
-                resize: 'none',
-                fontFamily: 'monospace',
-                fontSize: 13,
-                lineHeight: '24px',
-                padding: '0 8px',
-                borderRadius: 0,
+                overflow: 'auto',
                 border: '1px solid #91caff',
                 borderTop: 0,
+                background: '#fff',
               }}
-            />
+            >
+              {modifiedLines.map((line, i) => (
+                <div
+                  key={i}
+                  style={{
+                    display: 'flex',
+                    minHeight: 24,
+                    lineHeight: '24px',
+                    background: changedLineIndices.has(i) ? '#E6FFE6' : 'transparent',
+                    borderLeft: changedLineIndices.has(i) ? '3px solid #52c41a' : '3px solid transparent',
+                  }}
+                >
+                  <span style={{
+                    width: 45,
+                    minWidth: 45,
+                    textAlign: 'right',
+                    padding: '0 8px 0 4px',
+                    color: '#999',
+                    fontSize: 12,
+                    background: '#f0f0f0',
+                    userSelect: 'none',
+                  }}>
+                    {i + 1}
+                  </span>
+                  <span
+                    contentEditable
+                    suppressContentEditableWarning
+                    onBlur={(e) => {
+                      const newText = e.currentTarget.textContent ?? '';
+                      if (newText !== modifiedLines[i]) {
+                        setModifiedLines(prev => {
+                          const next = [...prev];
+                          next[i] = newText;
+                          return next;
+                        });
+                      }
+                    }}
+                    style={{
+                      flex: 1,
+                      padding: '0 8px',
+                      fontFamily: 'monospace',
+                      fontSize: 13,
+                      whiteSpace: 'pre-wrap',
+                      wordBreak: 'break-all',
+                      outline: 'none',
+                      cursor: 'text',
+                    }}
+                  >
+                    {line || '\u00A0'}
+                  </span>
+                  {changedLineIndices.has(i) && (
+                    <span
+                      style={{ padding: '0 4px', cursor: 'pointer', color: '#ff4d4f', userSelect: 'none' }}
+                      title="원본으로 되돌리기"
+                      onClick={() => handleRevertLine(i)}
+                    >
+                      <RollbackOutlined />
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       )}

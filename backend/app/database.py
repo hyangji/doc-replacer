@@ -7,10 +7,19 @@ from app.config import settings
 # PostgreSQL은 SSL 관련 파라미터가 URL에 포함됨, SQLite는 check_same_thread 필요
 _is_sqlite = settings.async_database_url.startswith("sqlite")
 
+_connect_args: dict = {}
+if _is_sqlite:
+    _connect_args = {"check_same_thread": False}
+elif "neon.tech" in settings.async_database_url:
+    # Neon Postgres는 SSL 필수
+    import ssl
+    _ssl_ctx = ssl.create_default_context()
+    _connect_args = {"ssl": _ssl_ctx}
+
 engine = create_async_engine(
     settings.async_database_url,
     echo=settings.DEBUG,
-    **({"connect_args": {"check_same_thread": False}} if _is_sqlite else {}),
+    connect_args=_connect_args,
 )
 
 async_session_factory = async_sessionmaker(engine, expire_on_commit=False)

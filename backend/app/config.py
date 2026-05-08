@@ -27,10 +27,22 @@ class Settings(BaseSettings):
     def async_database_url(self) -> str:
         """DATABASE_URL을 async 드라이버로 변환."""
         url = self.DATABASE_URL
-        if url.startswith("postgresql://"):
-            return url.replace("postgresql://", "postgresql+asyncpg://", 1)
-        if url.startswith("postgres://"):
-            return url.replace("postgres://", "postgresql+asyncpg://", 1)
+        if url.startswith("postgresql://") or url.startswith("postgres://"):
+            # asyncpg 드라이버로 변경
+            if url.startswith("postgres://"):
+                url = url.replace("postgres://", "postgresql+asyncpg://", 1)
+            else:
+                url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+            # asyncpg가 지원하지 않는 URL 파라미터 제거
+            from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+            parsed = urlparse(url)
+            params = parse_qs(parsed.query)
+            # channel_binding, sslmode 등 asyncpg 비호환 파라미터 제거
+            for key in ["channel_binding", "sslmode"]:
+                params.pop(key, None)
+            clean_query = urlencode(params, doseq=True)
+            url = urlunparse(parsed._replace(query=clean_query))
+            return url
         return url  # sqlite는 그대로
 
 

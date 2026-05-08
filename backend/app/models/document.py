@@ -1,7 +1,7 @@
 import enum
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String, Text, func
+from sqlalchemy import DateTime, Enum, ForeignKey, Integer, LargeBinary, String, Text, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -28,6 +28,7 @@ class Document(Base):
     original_filename: Mapped[str] = mapped_column(String(500), nullable=False)
     file_type: Mapped[FileType] = mapped_column(Enum(FileType), nullable=False)
     file_path: Mapped[str] = mapped_column(String(1000), nullable=False)
+    file_data: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     content_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
@@ -53,6 +54,7 @@ class DocumentVersion(Base):
     )
     version_number: Mapped[int] = mapped_column(Integer, nullable=False)
     file_path: Mapped[str] = mapped_column(String(1000), nullable=False)
+    file_data: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     content_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     changes_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(

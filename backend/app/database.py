@@ -4,7 +4,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.config import settings
 
-engine = create_async_engine(settings.DATABASE_URL, echo=settings.DEBUG)
+# PostgreSQL은 SSL 관련 파라미터가 URL에 포함됨, SQLite는 check_same_thread 필요
+_is_sqlite = settings.async_database_url.startswith("sqlite")
+
+engine = create_async_engine(
+    settings.async_database_url,
+    echo=settings.DEBUG,
+    **({"connect_args": {"check_same_thread": False}} if _is_sqlite else {}),
+)
 
 async_session_factory = async_sessionmaker(engine, expire_on_commit=False)
 

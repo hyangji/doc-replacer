@@ -336,8 +336,10 @@ async def revert_to_version(
 
     from app.services.document_service import create_version
 
+    # file_data가 있으면 DB 바이너리 사용, 없으면 빈 bytes
+    revert_data = target_version.file_data or b""
     await create_version(
-        db, document, target_version.file_path, target_version.content_text, summary
+        db, document, revert_data, target_version.content_text, summary
     )
 
     await db.refresh(document)

@@ -9,7 +9,11 @@ from app.config import settings
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
+    # UPLOAD_DIR은 로컬 개발 시에만 필요 (DB 바이너리 저장 모드에서는 불필요)
+    try:
+        os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
+    except OSError:
+        pass  # Vercel 등 읽기전용 파일시스템에서는 무시
     try:
         from app.database import engine
         from app.models.document import Base

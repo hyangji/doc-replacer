@@ -1,9 +1,8 @@
 import sys
 import os
 
-# Vercel serverless: set env for SQLite in /tmp
-os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:////tmp/doc_replacer.db")
-os.environ.setdefault("UPLOAD_DIR", "/tmp/uploads")
+# Vercel 환경변수로 DATABASE_URL이 자동 주입됨 (Neon Postgres)
+# 로컬 개발 시에는 .env 파일에서 읽음
 
 # Add parent directory to path so 'app' package is importable
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

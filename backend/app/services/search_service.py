@@ -172,10 +172,10 @@ class SearchService:
         case_sensitive: bool = False,
         use_regex: bool = False,
     ) -> list[dict]:
-        """Search text in a document (file or stored content)."""
-        if document.file_type == FileType.HWPX:
+        """Search text in a document (file data or stored content)."""
+        if document.file_type == FileType.HWPX and document.file_data:
             try:
-                content = await self._hwp_service.get_text_content(document.file_path)
+                content = await self._hwp_service.get_text_content(document.file_data)
             except Exception:
                 content = document.content_text or ""
         else:
@@ -199,8 +199,11 @@ class SearchService:
         if document.file_type != FileType.HWPX:
             raise SearchServiceError("현재 HWPX 파일만 수정을 지원합니다.")
 
-        new_path, count = self._hwp_service.replace_text(
-            document.file_path, search, replace_with, case_sensitive, use_regex
+        if not document.file_data:
+            raise SearchServiceError("파일 데이터가 없습니다.")
+
+        new_data, count = self._hwp_service.replace_text(
+            document.file_data, search, replace_with, case_sensitive, use_regex
         )
 
         if count > 0:
@@ -213,13 +216,13 @@ class SearchService:
             )
             db.add(log)
 
-            new_content = await self._hwp_service.get_text_content(new_path)
+            new_content = await self._hwp_service.get_text_content(new_data)
             summary = f"검색/치환: '{search}' -> '{replace_with}' ({count}건)"
 
             from app.services.document_service import create_version
 
             version = await create_version(
-                db, document, new_path, new_content, summary
+                db, document, new_data, new_content, summary
             )
             return count, version.version_number
 

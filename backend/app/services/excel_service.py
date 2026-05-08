@@ -120,19 +120,19 @@ class ExcelService:
         return mappings
 
     async def apply_replacements(
-        self, file_path: str, mappings: list[dict]
-    ) -> tuple[str, list[dict]]:
-        """Apply replacement mappings to an HWPX file.
+        self, file_data: bytes, mappings: list[dict]
+    ) -> tuple[bytes, list[dict]]:
+        """Apply replacement mappings to HWPX file data (in-memory).
 
         Args:
-            file_path: Path to the HWPX file.
+            file_data: HWPX file bytes.
             mappings: List of mapping dicts (from create_mapping or parse_replacement_excel).
 
         Returns:
-            (modified_file_path, change_log)
+            (modified_file_data, change_log)
             change_log: [{"field_name": str, "old_value": str, "new_value": str, "count": int}]
         """
-        current_path = file_path
+        current_data = file_data
         change_log: list[dict] = []
 
         for m in mappings:
@@ -141,8 +141,8 @@ class ExcelService:
             if not old_val:
                 continue
 
-            new_path, count = self._hwp_service.replace_text(
-                current_path, old_val, new_val
+            new_data, count = self._hwp_service.replace_text(
+                current_data, old_val, new_val
             )
             change_log.append({
                 "field_name": m.get("field_name", ""),
@@ -151,9 +151,9 @@ class ExcelService:
                 "count": count,
             })
             if count > 0:
-                current_path = new_path
+                current_data = new_data
 
-        return current_path, change_log
+        return current_data, change_log
 
     async def preview_mappings(
         self, excel_data: dict, hwpx_tables: list[dict]

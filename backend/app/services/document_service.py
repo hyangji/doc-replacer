@@ -3,7 +3,6 @@
 import os
 from datetime import datetime, timezone
 
-import aiofiles
 from fastapi import UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -36,10 +35,7 @@ class DocumentServiceError(Exception):
 # ── Upload ──
 
 
-async def create_document(
-    db: AsyncSession,
-    file: UploadFile,
-) -> Document:
+async def create_document(db: AsyncSession, file: UploadFile) -> Document:
     """Upload and create a new document record."""
     if not file.filename:
         raise DocumentServiceError("파일 이름이 없습니다.")
@@ -52,7 +48,6 @@ async def create_document(
         )
 
     file_type = detect_file_type(file.filename)
-
     content = await file.read()
     if len(content) > settings.MAX_UPLOAD_SIZE:
         raise DocumentServiceError(
@@ -60,47 +55,33 @@ async def create_document(
             f"최대: {settings.MAX_UPLOAD_SIZE // (1024 * 1024)}MB"
         )
 
-    # Save to temp first
-    temp_path = await hwp_service.save_upload_to_temp(content, ext)
+    # Extract text content
+    content_text = None
+    if file_type == "hwpx":
+        try:
+            content_text = await hwp_service.get_text_content(content)
+        except (HwpParseError, HwpConversionError):
+            pass
 
-    # Create DB record to get the document ID
+    # Create document with file data stored in DB
     doc = Document(
         filename=f"current{ext}",
         original_filename=file.filename,
         file_type=FileType(file_type),
-        file_path="",  # will be set after structured storage
-        content_text=None,
+        file_path="db",  # 파일이 DB에 저장됨을 표시
+        file_data=content,
+        content_text=content_text,
     )
     db.add(doc)
     await db.commit()
     await db.refresh(doc)
 
-    # Move to structured storage: uploads/{id}/original.hwpx, current.hwpx
-    original_path, current_path = hwp_service.move_to_document_storage(
-        temp_path, doc.id, ext
-    )
-    doc.file_path = current_path
-
-    # Extract text content
-    content_text = None
-    if file_type == "hwpx":
-        try:
-            content_text = await hwp_service.get_text_content(current_path)
-        except (HwpParseError, HwpConversionError):
-            pass
-    elif file_type == "hwp":
-        pass  # HWP binary not yet supported
-
-    doc.content_text = content_text
-    await db.commit()
-    await db.refresh(doc)
-
     # Create initial version (v1)
-    v1_path = hwp_service.save_version_file(current_path, doc.id, 1, ext)
     version = DocumentVersion(
         document_id=doc.id,
         version_number=1,
-        file_path=v1_path,
+        file_path="db",
+        file_data=content,
         content_text=content_text,
         changes_summary="초기 업로드",
     )
@@ -148,7 +129,7 @@ async def get_latest_version(db: AsyncSession, document_id: int) -> DocumentVers
 async def create_version(
     db: AsyncSession,
     document: Document,
-    new_file_path: str,
+    new_file_data: bytes,
     new_content_text: str | None,
     changes_summary: str,
 ) -> DocumentVersion:
@@ -156,27 +137,18 @@ async def create_version(
     latest = await get_latest_version(db, document.id)
     next_version = (latest.version_number + 1) if latest else 1
 
-    ext = os.path.splitext(document.file_path)[1].lower() or ".hwpx"
-    version_path = hwp_service.save_version_file(
-        new_file_path, document.id, next_version, ext
-    )
-
     version = DocumentVersion(
         document_id=document.id,
         version_number=next_version,
-        file_path=version_path,
+        file_path="db",
+        file_data=new_file_data,
         content_text=new_content_text,
         changes_summary=changes_summary,
     )
     db.add(version)
 
     # Update document current file
-    doc_dir = hwp_service.get_document_dir(document.id)
-    current_path = os.path.join(doc_dir, f"current{ext}")
-    import shutil
-    shutil.copy2(new_file_path, current_path)
-
-    document.file_path = current_path
+    document.file_data = new_file_data
     document.content_text = new_content_text
     document.updated_at = datetime.now(timezone.utc)
 
@@ -205,9 +177,6 @@ async def replace_in_document(
 ) -> tuple[int, int]:
     """Apply multiple text replacements to a document.
 
-    Supports both full-text replacements and table-targeted replacements.
-    Tracks before/after diff for each replacement and logs all changes.
-
     Args:
         replacements: list of {"field_name": str, "old_value": str, "new_value": str}
 
@@ -218,20 +187,19 @@ async def replace_in_document(
     if document.file_type != FileType.HWPX:
         raise DocumentServiceError("현재 HWPX 파일만 수정을 지원합니다.")
 
-    # Capture pre-replacement text for diff
-    old_text = await hwp_service.get_text_content(document.file_path)
+    if not document.file_data:
+        raise DocumentServiceError("파일 데이터가 없습니다.")
 
-    # Map replacements to table cells for visibility
-    tables = await hwp_service.extract_tables(document.file_path)
+    old_text = await hwp_service.get_text_content(document.file_data)
+    tables = await hwp_service.extract_tables(document.file_data)
     mapped = map_excel_to_tables(replacements, tables)
 
-    # Apply replacements sequentially
-    current_path = document.file_path
+    current_data = document.file_data
     total_count = 0
 
     for r in replacements:
-        new_path, count = hwp_service.replace_text(
-            current_path, r["old_value"], r["new_value"]
+        new_data, count = hwp_service.replace_text(
+            current_data, r["old_value"], r["new_value"]
         )
         total_count += count
         if count > 0:
@@ -243,20 +211,17 @@ async def replace_in_document(
                 replacement_type=ReplacementType.EXCEL,
             )
             db.add(log)
-            current_path = new_path
+            current_data = new_data
 
     if total_count > 0:
-        new_content = await hwp_service.get_text_content(current_path)
-
-        # Build diff records for the summary
+        new_content = await hwp_service.get_text_content(current_data)
         diff_records = build_replacement_diff(replacements, old_text, new_content)
         applied_count = sum(1 for d in diff_records if d["applied"])
-
         summary = (
             f"일괄 교체: {len(replacements)}건 요청, "
             f"{applied_count}건 매칭, {total_count}건 수정"
         )
-        version = await create_version(db, document, current_path, new_content, summary)
+        version = await create_version(db, document, current_data, new_content, summary)
         return total_count, version.version_number
 
     return 0, 0
@@ -326,11 +291,11 @@ async def save_document_content(
     """에디터에서 수정한 내용을 HWPX 파일에 저장."""
     if document.file_type != FileType.HWPX:
         raise DocumentServiceError("현재 HWPX 파일만 저장을 지원합니다.")
+    if not document.file_data:
+        raise DocumentServiceError("파일 데이터가 없습니다.")
 
-    new_path = await hwp_service.save_file(document.file_path, content)
-    version = await create_version(db, document, new_path, content, "에디터에서 직접 수정")
-
-    # refresh to get updated versions
+    new_data = await hwp_service.save_file(document.file_data, content)
+    await create_version(db, document, new_data, content, "에디터에서 직접 수정")
     await db.refresh(document)
     return document
 
@@ -339,12 +304,6 @@ async def save_document_content(
 
 
 async def delete_document(db: AsyncSession, document: Document) -> None:
-    """Delete a document and its files."""
-    import shutil
-    doc_dir = hwp_service.get_document_dir(document.id)
-
+    """Delete a document (DB only, no filesystem cleanup needed)."""
     await db.delete(document)
     await db.commit()
-
-    if os.path.exists(doc_dir):
-        shutil.rmtree(doc_dir, ignore_errors=True)

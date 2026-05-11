@@ -157,6 +157,39 @@ async def create_version(
     return version
 
 
+async def create_preview_version(
+    db: AsyncSession,
+    document: Document,
+    new_file_data: bytes,
+    new_content_text: str | None,
+    changes_summary: str,
+) -> DocumentVersion:
+    """Create a new version WITHOUT updating the document's current content.
+
+    Used for Excel batch replace: the user reviews the diff first,
+    and only when they explicitly click "Save" does the document update.
+    """
+    latest = await get_latest_version(db, document.id)
+    next_version = (latest.version_number + 1) if latest else 1
+
+    version = DocumentVersion(
+        document_id=document.id,
+        version_number=next_version,
+        file_path="db",
+        file_data=new_file_data,
+        content_text=new_content_text,
+        changes_summary=changes_summary,
+    )
+    db.add(version)
+
+    # NOTE: document.file_data / content_text are NOT updated here.
+    # The user must explicitly save from the Diff view.
+
+    await db.commit()
+    await db.refresh(version)
+    return version
+
+
 async def get_versions(db: AsyncSession, document_id: int) -> list[DocumentVersion]:
     stmt = (
         select(DocumentVersion)
@@ -221,7 +254,7 @@ async def replace_in_document(
             f"일괄 교체: {len(replacements)}건 요청, "
             f"{applied_count}건 매칭, {total_count}건 수정"
         )
-        version = await create_version(db, document, current_data, new_content, summary)
+        version = await create_preview_version(db, document, current_data, new_content, summary)
         return total_count, version.version_number
 
     return 0, 0

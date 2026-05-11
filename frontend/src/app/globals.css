@@ -54,3 +54,10 @@ body {
 .search-highlight-current {
   background-color: #FFD591 !important;
 }
+
+/* Diff 요약 테이블: 원본으로 되돌려진 row */
+.ant-table-row-reverted td {
+  background-color: #f0f0f0 !important;
+  color: #999 !important;
+  text-decoration: line-through;
+}

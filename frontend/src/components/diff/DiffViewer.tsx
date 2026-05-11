@@ -83,6 +83,12 @@ export default function DiffViewer({
     modifiedContent.split('\n')
   );
 
+  // 원래 수정본 라인 저장 (수정본으로 되돌리기용)
+  const originalModifiedLines = useMemo(
+    () => modifiedContent.split('\n'),
+    [modifiedContent]
+  );
+
   useEffect(() => {
     setModifiedLines(modifiedContent.split('\n'));
   }, [modifiedContent]);
@@ -101,7 +107,7 @@ export default function DiffViewer({
     onModifiedTextChange?.(currentModifiedText);
   }, [currentModifiedText, onModifiedTextChange]);
 
-  // 변경된 줄 인덱스 Set (하이라이트용)
+  // 변경된 줄 인덱스 Set (현재 상태 기준 하이라이트용)
   const changedLineIndices = useMemo(() => {
     const set = new Set<number>();
     const maxLen = Math.max(originalLines.length, modifiedLines.length);
@@ -113,36 +119,52 @@ export default function DiffViewer({
     return set;
   }, [originalLines, modifiedLines]);
 
+  // 원래 수정본에서 변경되었던 줄 인덱스 Set (되돌리기 버튼 표시용 - 원본 vs 최초 수정본)
+  const originallyChangedIndices = useMemo(() => {
+    const set = new Set<number>();
+    const maxLen = Math.max(originalLines.length, originalModifiedLines.length);
+    for (let i = 0; i < maxLen; i++) {
+      if ((originalLines[i] ?? '') !== (originalModifiedLines[i] ?? '')) {
+        set.add(i);
+      }
+    }
+    return set;
+  }, [originalLines, originalModifiedLines]);
+
+  // 원래 수정본 기준으로 변경된 줄 목록 (되돌려도 row가 유지됨)
   const changedLines = useMemo(() => {
     const changes: ChangeRecord[] = [];
-    const maxLen = Math.max(originalLines.length, modifiedLines.length);
+    const maxLen = Math.max(originalLines.length, originalModifiedLines.length);
     for (let i = 0; i < maxLen; i++) {
       const orig = originalLines[i] ?? '';
-      const mod = modifiedLines[i] ?? '';
-      if (orig !== mod) {
+      const origMod = originalModifiedLines[i] ?? '';
+      if (orig !== origMod) {
         let type: ChangeRecord['type'] = '수정';
         if (i >= originalLines.length) type = '추가';
-        else if (i >= modifiedLines.length) type = '삭제';
+        else if (i >= originalModifiedLines.length) type = '삭제';
         changes.push({
           key: String(i),
           index: changes.length + 1,
           line: i + 1,
           type,
           original: orig,
-          modified: mod,
+          modified: origMod,
         });
       }
     }
     return changes;
-  }, [originalLines, modifiedLines]);
+  }, [originalLines, originalModifiedLines]);
 
   const navigateChange = (direction: 'prev' | 'next') => {
     if (changedLines.length === 0) return;
+    let newIndex: number;
     if (direction === 'next') {
-      setCurrentChangeIndex((prev) => (prev + 1) % changedLines.length);
+      newIndex = (currentChangeIndex + 1) % changedLines.length;
     } else {
-      setCurrentChangeIndex((prev) => (prev - 1 + changedLines.length) % changedLines.length);
+      newIndex = (currentChangeIndex - 1 + changedLines.length) % changedLines.length;
     }
+    setCurrentChangeIndex(newIndex);
+    scrollToLine(changedLines[newIndex].line);
   };
 
   const handleRevertLine = (lineIndex: number) => {
@@ -152,6 +174,60 @@ export default function DiffViewer({
       return next;
     });
   };
+
+  // 수정본으로 되돌리기
+  const handleRestoreLine = (lineIndex: number) => {
+    setModifiedLines((prev) => {
+      const next = [...prev];
+      next[lineIndex] = originalModifiedLines[lineIndex] ?? '';
+      return next;
+    });
+  };
+
+  // 해당 줄이 원본으로 되돌려진 상태인지 확인
+  const isRevertedToOriginal = useCallback((lineIndex: number) => {
+    const orig = originalLines[lineIndex] ?? '';
+    const origMod = originalModifiedLines[lineIndex] ?? '';
+    const current = modifiedLines[lineIndex] ?? '';
+    // 원래 수정본과 원본이 다르고, 현재 원본과 같으면 되돌려진 상태
+    return orig !== origMod && current === orig;
+  }, [originalLines, originalModifiedLines, modifiedLines]);
+
+  // diff viewer 컨테이너 ref (스크롤용)
+  const diffContainerRef = useRef<HTMLDivElement>(null);
+
+  // 변경사항 테이블 row 클릭 시 해당 위치로 스크롤
+  const scrollToLine = useCallback((lineNumber: number) => {
+    const lineIndex = lineNumber - 1;
+    const LINE_HEIGHT = 24;
+
+    if (viewMode === 'edit') {
+      // 편집 모드: 양쪽 패널 스크롤
+      const scrollTop = lineIndex * LINE_HEIGHT - 100;
+      if (originalRef.current) {
+        originalRef.current.scrollTop = Math.max(0, scrollTop);
+      }
+      if (modifiedRef.current) {
+        (modifiedRef.current as unknown as HTMLDivElement).scrollTop = Math.max(0, scrollTop);
+      }
+    } else {
+      // 비교 모드: diff viewer 내에서 해당 줄로 스크롤
+      if (diffContainerRef.current) {
+        const rows = diffContainerRef.current.querySelectorAll('tr');
+        for (const row of rows) {
+          const lineNumCell = row.querySelector('td:first-child pre');
+          if (lineNumCell && lineNumCell.textContent?.trim() === String(lineNumber)) {
+            row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            // 하이라이트 효과
+            row.style.transition = 'background 0.3s';
+            row.style.background = '#fff7e6';
+            setTimeout(() => { row.style.background = ''; }, 1500);
+            break;
+          }
+        }
+      }
+    }
+  }, [viewMode]);
 
   // 편집 모드에서 스크롤 동기화
   const handleOriginalScroll = useCallback(() => {
@@ -182,18 +258,31 @@ export default function DiffViewer({
       render: (text: string) => <Text type={text ? undefined : 'secondary'}>{text || '-'}</Text>,
     },
     {
-      title: '', key: 'action', width: 80,
-      render: (_: unknown, record: ChangeRecord) => (
-        <Button
-          type="link"
-          size="small"
-          danger
-          icon={<RollbackOutlined />}
-          onClick={(e) => { e.stopPropagation(); handleRevertLine(record.line - 1); }}
-        >
-          되돌리기
-        </Button>
-      ),
+      title: '', key: 'action', width: 140,
+      render: (_: unknown, record: ChangeRecord) => {
+        const reverted = isRevertedToOriginal(record.line - 1);
+        return reverted ? (
+          <Button
+            type="link"
+            size="small"
+            style={{ color: '#1677ff' }}
+            icon={<RollbackOutlined />}
+            onClick={(e) => { e.stopPropagation(); handleRestoreLine(record.line - 1); }}
+          >
+            수정본으로
+          </Button>
+        ) : (
+          <Button
+            type="link"
+            size="small"
+            danger
+            icon={<RollbackOutlined />}
+            onClick={(e) => { e.stopPropagation(); handleRevertLine(record.line - 1); }}
+          >
+            원본으로
+          </Button>
+        );
+      },
     },
   ];
 
@@ -229,6 +318,7 @@ export default function DiffViewer({
       {/* 비교 모드: react-diff-viewer */}
       {viewMode === 'compare' && (
         <Card
+          ref={diffContainerRef}
           size="small"
           styles={{ body: { padding: 0, overflow: 'auto', userSelect: 'text', WebkitUserSelect: 'text' } }}
         >
@@ -332,15 +422,18 @@ export default function DiffViewer({
                 background: '#fff',
               }}
             >
-              {modifiedLines.map((line, i) => (
+              {modifiedLines.map((line, i) => {
+                const isChanged = changedLineIndices.has(i);
+                const isReverted = !isChanged && originallyChangedIndices.has(i) && isRevertedToOriginal(i);
+                return (
                 <div
                   key={i}
                   style={{
                     display: 'flex',
                     minHeight: 24,
                     lineHeight: '24px',
-                    background: changedLineIndices.has(i) ? '#E6FFE6' : 'transparent',
-                    borderLeft: changedLineIndices.has(i) ? '3px solid #52c41a' : '3px solid transparent',
+                    background: isChanged ? '#E6FFE6' : isReverted ? '#e6f4ff' : 'transparent',
+                    borderLeft: isChanged ? '3px solid #52c41a' : isReverted ? '3px solid #1677ff' : '3px solid transparent',
                   }}
                 >
                   <span style={{
@@ -381,7 +474,8 @@ export default function DiffViewer({
                   >
                     {line || '\u00A0'}
                   </span>
-                  {changedLineIndices.has(i) && (
+                  {/* 현재 수정된 줄: 원본으로 되돌리기 */}
+                  {changedLineIndices.has(i) && originallyChangedIndices.has(i) && (
                     <span
                       style={{ padding: '0 4px', cursor: 'pointer', color: '#ff4d4f', userSelect: 'none' }}
                       title="원본으로 되돌리기"
@@ -390,8 +484,19 @@ export default function DiffViewer({
                       <RollbackOutlined />
                     </span>
                   )}
+                  {/* 원본으로 되돌려진 줄: 수정본으로 되돌리기 */}
+                  {!changedLineIndices.has(i) && originallyChangedIndices.has(i) && isRevertedToOriginal(i) && (
+                    <span
+                      style={{ padding: '0 4px', cursor: 'pointer', color: '#1677ff', userSelect: 'none' }}
+                      title="수정본으로 되돌리기"
+                      onClick={() => handleRestoreLine(i)}
+                    >
+                      <RollbackOutlined />
+                    </span>
+                  )}
                 </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         </div>
@@ -409,9 +514,17 @@ export default function DiffViewer({
             pagination={false}
             size="small"
             scroll={{ y: 300 }}
-            rowClassName={(_, index) => index === currentChangeIndex ? 'ant-table-row-selected' : ''}
-            onRow={(_, index) => ({
-              onClick: () => { if (index !== undefined) setCurrentChangeIndex(index); },
+            rowClassName={(record, index) => {
+              const classes: string[] = [];
+              if (index === currentChangeIndex) classes.push('ant-table-row-selected');
+              if (isRevertedToOriginal(record.line - 1)) classes.push('ant-table-row-reverted');
+              return classes.join(' ');
+            }}
+            onRow={(record, index) => ({
+              onClick: () => {
+                if (index !== undefined) setCurrentChangeIndex(index);
+                scrollToLine(record.line);
+              },
               style: { cursor: 'pointer' },
             })}
           />

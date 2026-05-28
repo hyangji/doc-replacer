@@ -1,16 +1,15 @@
 # DocReplacer - 도시계획 제안서 문서 관리 시스템
 
 ## 프로젝트 개요
-도시계획 제안서의 반복적 문서 수정을 자동화하고 법률 문서 정확성을 검증하는 웹 시스템.
+도시계획 제안서의 반복적 문서 수정을 자동화하는 웹 시스템.
 
 ## 기술 스택
 - **프론트엔드**: Next.js 15, React 19, TypeScript, Ant Design, Monaco Editor, react-diff-viewer
-- **백엔드**: Python 3.12, FastAPI, SQLAlchemy, Celery
-- **HWP 처리**: Java hwplib (HWP) + python-hwpx (HWPX) - 2단계 파이프라인
+- **백엔드**: Python 3.12, FastAPI, SQLAlchemy
+- **HWP 처리**: olefile + zlib (HWP 바이너리) + defusedxml (HWPX)
 - **엑셀 처리**: openpyxl, pandas
-- **파일 변환**: python-docx (Word), reportlab (PDF)
-- **법률 API**: 국가법령정보 Open API (법제처, 무료)
-- **DB**: PostgreSQL, Redis
+- **파일 변환**: python-docx (Word)
+- **DB**: SQLite (로컬) / PostgreSQL (배포)
 - **인프라**: Docker, Docker Compose
 
 ## 디렉토리 구조
@@ -41,10 +40,9 @@ doc-replacer/
 - 파일 업로드 최대 50MB
 
 ## 개발 단계
-- 1단계 (MVP): HWP/HWPX 처리, 엑셀 일괄 수정, 검색/치환, Diff View
-- 2단계: 법률 API 연동, 법률 검색 화면, 오타 검출
-- 3단계: 파일 변환 (Word, PDF), 금액 자동 변환/계산
-- 4단계: 버전 관리, 다중 파일 처리, 변경 보고서, PDF 내보내기
+- 1단계 (MVP): HWP/HWPX 처리, 엑셀 일괄 수정, 검색/치환, Diff View ✅
+- 2단계: 파일 변환 (Word, PDF), 금액 자동 변환/계산
+- 3단계: 버전 관리, 다중 파일 처리, 변경 보고서, PDF 내보내기
 
 ## 명령어
 - 프론트엔드: `cd frontend && npm run dev` (port 3000)

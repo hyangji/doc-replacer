@@ -3,9 +3,7 @@ from app.services import (
     document_service,
     excel_service,
     hwp_service,
-    law_service,
     search_service,
-    spellcheck_service,
 )
 
 __all__ = [
@@ -13,7 +11,5 @@ __all__ = [
     "document_service",
     "excel_service",
     "hwp_service",
-    "law_service",
     "search_service",
-    "spellcheck_service",
 ]

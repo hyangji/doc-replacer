@@ -7,9 +7,7 @@ import {
   DeleteOutlined,
   FolderOpenOutlined,
   UploadOutlined,
-  SearchOutlined,
   FileExcelOutlined,
-  BookOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { useRouter } from 'next/navigation';
@@ -153,22 +151,12 @@ export default function DashboardPage() {
             />
           </Card>
         </Col>
-        <Col xs={24} sm={8}>
-          <Card hoverable onClick={() => router.push('/law')}>
-            <Statistic
-              title="법률 검색"
-              value="바로가기"
-              prefix={<BookOutlined />}
-              valueStyle={{ fontSize: 18 }}
-            />
-          </Card>
-        </Col>
       </Row>
 
       {/* 퀵 액션 */}
       <Card title="빠른 작업">
         <Row gutter={[16, 16]}>
-          <Col xs={24} sm={8}>
+          <Col xs={24} sm={12}>
             <Button
               type="primary"
               icon={<UploadOutlined />}
@@ -179,17 +167,7 @@ export default function DashboardPage() {
               문서 업로드
             </Button>
           </Col>
-          <Col xs={24} sm={8}>
-            <Button
-              icon={<SearchOutlined />}
-              size="large"
-              block
-              onClick={() => router.push('/law')}
-            >
-              법률 검색
-            </Button>
-          </Col>
-          <Col xs={24} sm={8}>
+          <Col xs={24} sm={12}>
             <Button
               icon={<FileTextOutlined />}
               size="large"

@@ -39,13 +39,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-try:
-    from app.routers import documents_router, law_router, spellcheck_router
-    app.include_router(documents_router)
-    app.include_router(law_router)
-    app.include_router(spellcheck_router)
-except Exception:
-    pass
+from app.routers import documents_router
+
+app.include_router(documents_router)
 
 
 @app.get("/api/health")

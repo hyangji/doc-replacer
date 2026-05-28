@@ -5,12 +5,6 @@ class Settings(BaseSettings):
     # Database - Vercel에서는 환경변수로 자동 주입됨
     DATABASE_URL: str = "sqlite+aiosqlite:///./doc_replacer.db"
 
-    # Redis
-    REDIS_URL: str = "redis://localhost:6379/0"
-
-    # 국가법령정보 Open API
-    LAW_API_KEY: str = ""
-
     # File upload
     UPLOAD_DIR: str = "./uploads"
     MAX_UPLOAD_SIZE: int = 50 * 1024 * 1024  # 50MB

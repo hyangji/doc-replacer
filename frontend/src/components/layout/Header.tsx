@@ -2,14 +2,13 @@
 
 import React from 'react';
 import { Layout, Menu, Button } from 'antd';
-import { SettingOutlined, HomeOutlined, SearchOutlined } from '@ant-design/icons';
+import { SettingOutlined, HomeOutlined } from '@ant-design/icons';
 import { useRouter, usePathname } from 'next/navigation';
 
 const { Header: AntHeader } = Layout;
 
 const menuItems = [
   { key: '/', label: '대시보드', icon: <HomeOutlined /> },
-  { key: '/law', label: '법률 검색', icon: <SearchOutlined /> },
 ];
 
 export default function Header() {

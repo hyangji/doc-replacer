@@ -5,7 +5,7 @@ import RootLayoutClient from './RootLayoutClient';
 
 export const metadata: Metadata = {
   title: 'DocReplacer - 문서 관리 시스템',
-  description: '도시계획 제안서의 반복적 문서 수정을 자동화하고 법률 문서 정확성을 검증하는 웹 시스템',
+  description: '도시계획 제안서의 반복적 문서 수정을 자동화하는 웹 시스템',
 };
 
 export default function RootLayout({

@@ -57,9 +57,9 @@ async def create_document(db: AsyncSession, file: UploadFile) -> Document:
 
     # Extract text content
     content_text = None
-    if file_type == "hwpx":
+    if file_type in ("hwpx", "hwp"):
         try:
-            content_text = await hwp_service.get_text_content(content)
+            content_text = await hwp_service.get_text_content(content, file_type)
         except (HwpParseError, HwpConversionError):
             pass
 
@@ -217,14 +217,15 @@ async def replace_in_document(
     """
     from app.services.excel_service import build_replacement_diff, map_excel_to_tables
 
-    if document.file_type != FileType.HWPX:
-        raise DocumentServiceError("현재 HWPX 파일만 수정을 지원합니다.")
+    if document.file_type not in (FileType.HWPX, FileType.HWP):
+        raise DocumentServiceError("현재 HWP/HWPX 파일만 수정을 지원합니다.")
 
     if not document.file_data:
         raise DocumentServiceError("파일 데이터가 없습니다.")
 
-    old_text = await hwp_service.get_text_content(document.file_data)
-    tables = await hwp_service.extract_tables(document.file_data)
+    ft = document.file_type.value
+    old_text = await hwp_service.get_text_content(document.file_data, ft)
+    tables = await hwp_service.extract_tables(document.file_data, ft)
     mapped = map_excel_to_tables(replacements, tables)
 
     current_data = document.file_data
@@ -232,7 +233,7 @@ async def replace_in_document(
 
     for r in replacements:
         new_data, count = hwp_service.replace_text(
-            current_data, r["old_value"], r["new_value"]
+            current_data, r["old_value"], r["new_value"], file_type=ft
         )
         total_count += count
         if count > 0:
@@ -247,7 +248,7 @@ async def replace_in_document(
             current_data = new_data
 
     if total_count > 0:
-        new_content = await hwp_service.get_text_content(current_data)
+        new_content = await hwp_service.get_text_content(current_data, ft)
         diff_records = build_replacement_diff(replacements, old_text, new_content)
         applied_count = sum(1 for d in diff_records if d["applied"])
         summary = (

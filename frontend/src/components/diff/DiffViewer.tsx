@@ -2,21 +2,25 @@
 
 import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import ReactDiffViewer, { DiffMethod } from 'react-diff-viewer-continued';
-import { Card, Radio, Button, Space, Typography, Table, Tag } from 'antd';
+import { diffWords } from 'diff';
+import { Card, Radio, Button, Space, Typography, Table, Tag, Spin } from 'antd';
 import {
   UpOutlined,
   DownOutlined,
   RollbackOutlined,
   SaveOutlined,
   DownloadOutlined,
+  FileWordOutlined,
   EditOutlined,
   EyeOutlined,
+  FileTextOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
+import { getDocumentHtml, getDocumentCompareHtml } from '@/lib/api';
 
 const { Title, Text } = Typography;
 
-type ViewMode = 'compare' | 'edit';
+type ViewMode = 'compare' | 'edit' | 'document';
 
 export interface ChangeRecord {
   key: string;
@@ -32,9 +36,13 @@ interface DiffViewerProps {
   modifiedContent: string;
   originalTitle?: string;
   modifiedTitle?: string;
+  documentId?: number;
+  originalVersion?: number;
+  modifiedVersion?: number;
   onRevertAll?: () => void;
   onSave?: (modifiedText?: string) => void;
   onDownloadReport?: () => void;
+  onDownloadHwp?: () => void;
   onModifiedTextChange?: (text: string) => void;
 }
 
@@ -64,14 +72,74 @@ const diffStyles = {
   },
 };
 
+// 한 줄을 토큰(단어) 단위로 비교해, side에 해당하는 세그먼트만 강조한 span 배열 반환.
+// side === 'old': 원본 줄에서 삭제/변경된 토큰을 빨강+취소선으로 강조.
+// side === 'new': 수정본 줄에서 추가/변경된 토큰을 초록+굵게 강조.
+function renderInlineDiff(
+  original: string,
+  modified: string,
+  side: 'old' | 'new'
+): React.ReactNode[] {
+  const segments = diffWords(original, modified);
+  const nodes: React.ReactNode[] = [];
+
+  segments.forEach((seg, idx) => {
+    if (side === 'old') {
+      // 원본 쪽: 공통 토큰 + 삭제된 토큰만 렌더 (추가된 토큰은 원본에 없음)
+      if (seg.added) return;
+      if (seg.removed) {
+        nodes.push(
+          <span
+            key={idx}
+            style={{
+              background: '#ffd6d6',
+              color: '#cf1322',
+              textDecoration: 'line-through',
+            }}
+          >
+            {seg.value}
+          </span>
+        );
+      } else {
+        nodes.push(<span key={idx}>{seg.value}</span>);
+      }
+    } else {
+      // 수정본 쪽: 공통 토큰 + 추가된 토큰만 렌더 (삭제된 토큰은 수정본에 없음)
+      if (seg.removed) return;
+      if (seg.added) {
+        nodes.push(
+          <span
+            key={idx}
+            style={{
+              background: '#b7eb8f',
+              color: '#135200',
+              fontWeight: 700,
+            }}
+          >
+            {seg.value}
+          </span>
+        );
+      } else {
+        nodes.push(<span key={idx}>{seg.value}</span>);
+      }
+    }
+  });
+
+  return nodes;
+}
+
 export default function DiffViewer({
   originalContent,
   modifiedContent,
   originalTitle = '원본 문서',
   modifiedTitle = '수정된 문서',
+  documentId,
+  originalVersion = 1,
+  modifiedVersion,
   onRevertAll,
   onSave,
   onDownloadReport,
+  onDownloadHwp,
   onModifiedTextChange,
 }: DiffViewerProps) {
   const [viewMode, setViewMode] = useState<ViewMode>('compare');
@@ -242,6 +310,99 @@ export default function DiffViewer({
     }
   }, []);
 
+  // --- 문서 모드: 좌/우 HTML 패널 스크롤 동기화 ---
+  const docOriginalRef = useRef<HTMLDivElement>(null);
+  const docModifiedRef = useRef<HTMLDivElement>(null);
+  // 프로그래밍적 스크롤 중 상대 onScroll을 무시해 무한 루프(떨림) 방지
+  const isSyncingDocScrollRef = useRef(false);
+
+  const syncDocScroll = useCallback((source: 'original' | 'modified') => {
+    if (isSyncingDocScrollRef.current) return;
+    const src = source === 'original' ? docOriginalRef.current : docModifiedRef.current;
+    const dst = source === 'original' ? docModifiedRef.current : docOriginalRef.current;
+    if (!src || !dst) return;
+    isSyncingDocScrollRef.current = true;
+    dst.scrollTop = src.scrollTop;
+    dst.scrollLeft = src.scrollLeft;
+    // 다음 프레임에 가드 해제 (대입으로 발생한 상대 스크롤 이벤트 소비 후)
+    requestAnimationFrame(() => {
+      isSyncingDocScrollRef.current = false;
+    });
+  }, []);
+
+  // --- 문서 모드: 표 보존 HTML 렌더 ---
+  const [originalHtml, setOriginalHtml] = useState<string | null>(null);
+  const [modifiedHtml, setModifiedHtml] = useState<string | null>(null);
+  const [htmlLoading, setHtmlLoading] = useState(false);
+  const [htmlError, setHtmlError] = useState<string | null>(null);
+  // 같은 요청 재호출 방지용 캐시
+  //  - 단일 버전 렌더: key = `v${version}`, value = html
+  //  - 비교(하이라이트) 렌더: key = `cmp${base}|${target}`, value = {original_html, modified_html}
+  const htmlCacheRef = useRef<Map<string, string>>(new Map());
+  const compareCacheRef = useRef<
+    Map<string, { original_html: string; modified_html: string }>
+  >(new Map());
+
+  useEffect(() => {
+    if (viewMode !== 'document' || documentId == null) return;
+
+    let cancelled = false;
+
+    const fetchSingle = async (version: number): Promise<string> => {
+      const key = `v${version}`;
+      const cached = htmlCacheRef.current.get(key);
+      if (cached != null) return cached;
+      const html = await getDocumentHtml(documentId, version);
+      htmlCacheRef.current.set(key, html);
+      return html;
+    };
+
+    const fetchCompare = async (
+      base: number,
+      target: number,
+    ): Promise<{ original_html: string; modified_html: string }> => {
+      const key = `cmp${base}|${target}`;
+      const cached = compareCacheRef.current.get(key);
+      if (cached != null) return cached;
+      const result = await getDocumentCompareHtml(documentId, base, target);
+      compareCacheRef.current.set(key, result);
+      return result;
+    };
+
+    const load = async () => {
+      setHtmlLoading(true);
+      setHtmlError(null);
+      try {
+        if (modifiedVersion != null) {
+          // 변경 있음: 비교 API로 하이라이트 포함 HTML 받기
+          const { original_html, modified_html } = await fetchCompare(
+            originalVersion,
+            modifiedVersion,
+          );
+          if (cancelled) return;
+          setOriginalHtml(original_html);
+          setModifiedHtml(modified_html);
+        } else {
+          // 변경 없음: 단일 버전 렌더(하이라이트 없음)
+          const html = await fetchSingle(originalVersion);
+          if (cancelled) return;
+          setOriginalHtml(html);
+          setModifiedHtml(html);
+        }
+      } catch {
+        if (cancelled) return;
+        setHtmlError('문서를 불러오지 못했습니다.');
+      } finally {
+        if (!cancelled) setHtmlLoading(false);
+      }
+    };
+
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, [viewMode, documentId, originalVersion, modifiedVersion]);
+
   const changeColumns: ColumnsType<ChangeRecord> = [
     { title: '#', dataIndex: 'index', key: 'index', width: 50 },
     { title: '위치', dataIndex: 'line', key: 'line', width: 80, render: (line: number) => `${line}줄` },
@@ -302,6 +463,9 @@ export default function DiffViewer({
             >
               <Radio.Button value="compare"><EyeOutlined /> 비교</Radio.Button>
               <Radio.Button value="edit"><EditOutlined /> 편집</Radio.Button>
+              {documentId != null && (
+                <Radio.Button value="document"><FileTextOutlined /> 문서</Radio.Button>
+              )}
             </Radio.Group>
           </Space>
 
@@ -392,7 +556,9 @@ export default function DiffViewer({
                     wordBreak: 'break-all',
                     userSelect: 'text',
                   }}>
-                    {line || '\u00A0'}
+                    {changedLineIndices.has(i)
+                      ? renderInlineDiff(line, modifiedLines[i] ?? '', 'old')
+                      : (line || '\u00A0')}
                   </span>
                 </div>
               ))}
@@ -472,7 +638,9 @@ export default function DiffViewer({
                       cursor: 'text',
                     }}
                   >
-                    {line || '\u00A0'}
+                    {isChanged
+                      ? renderInlineDiff(originalLines[i] ?? '', line, 'new')
+                      : (line || '\u00A0')}
                   </span>
                   {/* 현재 수정된 줄: 원본으로 되돌리기 */}
                   {changedLineIndices.has(i) && originallyChangedIndices.has(i) && (
@@ -501,6 +669,118 @@ export default function DiffViewer({
           </div>
         </div>
       )}
+
+      {/* 문서 모드: 표 보존 HTML 좌우 렌더 */}
+      {viewMode === 'document' && (
+        <>
+          {htmlLoading && (
+            <div style={{ display: 'flex', justifyContent: 'center', padding: 48 }}>
+              <Spin tip="문서를 불러오는 중..." />
+            </div>
+          )}
+          {!htmlLoading && htmlError && (
+            <Card size="small">
+              <Text type="danger">{htmlError}</Text>
+            </Card>
+          )}
+          {!htmlLoading && !htmlError && (
+            <div style={{ display: 'flex', gap: 2, height: 'calc(100vh - 360px)', minHeight: 400 }}>
+              {/* 좌측: 원본 HTML */}
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+                <div style={{
+                  padding: '8px 12px',
+                  background: '#f5f5f5',
+                  borderBottom: '1px solid #d9d9d9',
+                  fontWeight: 600,
+                  fontSize: 13,
+                }}>
+                  {originalTitle}
+                </div>
+                <div
+                  ref={docOriginalRef}
+                  onScroll={() => syncDocScroll('original')}
+                  className="doc-html-render doc-original"
+                  style={{
+                    flex: 1,
+                    overflow: 'auto',
+                    border: '1px solid #d9d9d9',
+                    borderTop: 0,
+                    background: '#fafafa',
+                    padding: 12,
+                    fontSize: 13,
+                  }}
+                  dangerouslySetInnerHTML={{ __html: originalHtml ?? '' }}
+                />
+              </div>
+
+              {/* 우측: 수정본 HTML */}
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+                <div style={{
+                  padding: '8px 12px',
+                  background: '#e6f4ff',
+                  borderBottom: '1px solid #91caff',
+                  fontWeight: 600,
+                  fontSize: 13,
+                  color: '#1677ff',
+                }}>
+                  {modifiedTitle}
+                </div>
+                <div
+                  ref={docModifiedRef}
+                  onScroll={() => syncDocScroll('modified')}
+                  className="doc-html-render doc-modified"
+                  style={{
+                    flex: 1,
+                    overflow: 'auto',
+                    border: '1px solid #91caff',
+                    borderTop: 0,
+                    background: '#fff',
+                    padding: 12,
+                    fontSize: 13,
+                  }}
+                  dangerouslySetInnerHTML={{ __html: modifiedHtml ?? '' }}
+                />
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* 문서 모드 표 스타일 */}
+      <style
+        dangerouslySetInnerHTML={{
+          __html: `
+            .doc-html-render table {
+              border-collapse: collapse;
+              max-width: 100%;
+            }
+            .doc-html-render table,
+            .doc-html-render td,
+            .doc-html-render th {
+              border: 1px solid #d9d9d9;
+            }
+            .doc-html-render td,
+            .doc-html-render th {
+              padding: 3px 6px;
+              font-size: 13px;
+              vertical-align: top;
+            }
+            .doc-html-render p {
+              margin: 0 0 6px;
+            }
+            /* 변경 하이라이트: 셀(td) 배경 + 인라인 단어(span) 배경 모두 적용 */
+            .doc-original .hwp-changed {
+              background: #ffd6d6;
+              color: #cf1322;
+            }
+            .doc-modified .hwp-changed {
+              background: #b7eb8f;
+              color: #135200;
+              font-weight: 700;
+            }
+          `,
+        }}
+      />
 
       {/* 변경사항 요약 테이블 */}
       {changedLines.length > 0 && (
@@ -537,7 +817,10 @@ export default function DiffViewer({
           {changedLines.length > 0 && (
             <Button danger icon={<RollbackOutlined />} onClick={onRevertAll}>모두 되돌리기</Button>
           )}
-          <Button icon={<DownloadOutlined />} onClick={onDownloadReport}>변경 보고서 다운로드</Button>
+          <Button icon={<DownloadOutlined />} onClick={onDownloadReport}>변경 내역(텍스트) 다운로드</Button>
+          {onDownloadHwp && (
+            <Button icon={<FileWordOutlined />} onClick={onDownloadHwp}>수정본 HWP 다운로드</Button>
+          )}
           <Button type="primary" icon={<SaveOutlined />} onClick={() => onSave?.(currentModifiedText)}>저장</Button>
         </Space>
       </div>

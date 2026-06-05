@@ -190,6 +190,19 @@ async def create_preview_version(
     return version
 
 
+async def get_version_by_number(
+    db: AsyncSession, document_id: int, version_number: int
+) -> DocumentVersion | None:
+    stmt = (
+        select(DocumentVersion)
+        .where(DocumentVersion.document_id == document_id)
+        .where(DocumentVersion.version_number == version_number)
+        .limit(1)
+    )
+    result = await db.execute(stmt)
+    return result.scalar_one_or_none()
+
+
 async def get_versions(db: AsyncSession, document_id: int) -> list[DocumentVersion]:
     stmt = (
         select(DocumentVersion)

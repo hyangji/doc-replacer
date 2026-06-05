@@ -291,7 +291,6 @@ async def get_diff(
         modified_text = await get_version_text(db, document.id, version_number) or ""
         ver_num = version_number
     else:
-        modified_text = document.content_text or ""
         stmt = (
             select(DocumentVersion)
             .where(DocumentVersion.document_id == document.id)
@@ -300,6 +299,7 @@ async def get_diff(
         )
         result = await db.execute(stmt)
         latest = result.scalar_one_or_none()
+        modified_text = (latest.content_text if latest else document.content_text) or ""
         ver_num = latest.version_number if latest else 1
 
     diff_data = _service.generate_diff(original_text, modified_text)

@@ -1,13 +1,22 @@
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+import os
+from urllib.parse import quote
+
+from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.schemas.document import (
+    ComparisonChangeItem,
+    ComparisonPreviewResponse,
+    ComparisonSectionInfo,
+    ComparisonSheetResult,
     ConvertRequest,
     ConvertResponse,
     DiffResponse,
+    DocumentCompareHtmlResponse,
     DocumentDetail,
+    DocumentHtmlResponse,
     DocumentListItem,
     DocumentUploadResponse,
     ExcelPreviewResponse,
@@ -180,6 +189,112 @@ async def replace_from_excel(
 
 
 @router.post(
+    "/{document_id}/replace/comparison/preview",
+    response_model=ComparisonPreviewResponse,
+    summary="대비표 엑셀 미리보기 (기정→변경후 교체쌍 + HWP 매칭 수 확인)",
+)
+async def preview_comparison_replacement(
+    document_id: int,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+) -> ComparisonPreviewResponse:
+    """도시계획 고시문 대비표 엑셀을 업로드하고 교체쌍 및 HWP 매칭 수를 미리 확인한다.
+
+    파일을 수정하지 않는 순수 미리보기 엔드포인트.
+    실제 교체는 기존 POST /{document_id}/replace (JSON ReplacementRequest) 로 수행한다.
+    """
+    doc = await _get_document_or_404(document_id, db)
+
+    if not file.filename or not file.filename.lower().endswith((".xlsx", ".xls")):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="엑셀 파일(.xlsx)만 업로드 가능합니다.",
+        )
+
+    content = await file.read()
+
+    # 1. 대비표 파싱 (v2: 교체쌍 + 구간 메타데이터)
+    try:
+        from app.services.excel_service import parse_comparison_table_excel_v2
+        parsed = parse_comparison_table_excel_v2(content)
+    except ExcelParseError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
+        )
+
+    items = parsed["items"]
+    sections = parsed["sections"]
+    if not items:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "엑셀 대비표에서 유효한 교체쌍을 찾을 수 없습니다. "
+                "파일 형식이 도시계획 고시문 대비표(기정/변경후 구조)인지 확인하세요."
+            ),
+        )
+
+    # 2. 문서 텍스트 추출 (매칭 수 계산용)
+    if not doc.file_data:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="문서 파일 데이터가 없습니다.",
+        )
+
+    from app.services.hwp_service import HwpService, HwpParseError
+    hwp_svc = HwpService()
+    ft = doc.file_type.value
+    try:
+        hwp_text = await hwp_svc.get_text_content(doc.file_data, ft)
+    except HwpParseError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"문서 텍스트 추출 실패: {e}",
+        )
+
+    # 3. 각 교체쌍의 HWP 매칭 수 계산 및 시트별 그룹핑
+    sheets_map: dict[str, list[ComparisonChangeItem]] = {}
+    total_matches = 0
+    unmatched_count = 0
+
+    for it in items:
+        match_count = hwp_text.count(it["old_value"])
+        change_item = ComparisonChangeItem(
+            sheet=it["sheet"],
+            field_name=it["field_name"],
+            old_value=it["old_value"],
+            new_value=it["new_value"],
+            match_count=match_count,
+        )
+        sheets_map.setdefault(it["sheet"], []).append(change_item)
+        total_matches += match_count
+        if match_count == 0:
+            unmatched_count += 1
+
+    sheet_results = [
+        ComparisonSheetResult(name=sheet_name, changes=changes)
+        for sheet_name, changes in sheets_map.items()
+    ]
+
+    section_infos = [
+        ComparisonSectionInfo(
+            sheet=s["sheet"],
+            label=s["label"],
+            extracted_count=s["extracted_count"],
+            status=s["status"],
+        )
+        for s in sections
+    ]
+
+    return ComparisonPreviewResponse(
+        sheets=sheet_results,
+        total_changes=len(items),
+        total_matches=total_matches,
+        unmatched_count=unmatched_count,
+        sections=section_infos,
+    )
+
+
+@router.post(
     "/{document_id}/replace",
     response_model=ReplacementResponse,
     summary="JSON 기반 일괄 교체",
@@ -322,6 +437,175 @@ async def convert_document(
         status_code=status.HTTP_501_NOT_IMPLEMENTED,
         detail="파일 변환 기능은 Phase 3에서 구현 예정입니다.",
     )
+
+
+@router.get(
+    "/{document_id}/download",
+    summary="수정본 HWP/HWPX 파일 다운로드",
+)
+async def download_document(
+    document_id: int,
+    version: int | None = None,
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """수정본(또는 특정 버전) HWP/HWPX 바이너리를 내려준다.
+
+    - version 지정 시: 해당 DocumentVersion.file_data (없으면 404)
+    - version 미지정 시: 최신 버전 file_data, 없으면 document.file_data
+    파일명은 원본명 stem + "_수정본" + 확장자 (RFC 5987 인코딩).
+    """
+    doc = await _get_document_or_404(document_id, db)
+
+    if version is not None:
+        target_version = await document_service.get_version_by_number(
+            db, document_id, version
+        )
+        if target_version is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"버전을 찾을 수 없습니다: {version}",
+            )
+        file_data = target_version.file_data
+    else:
+        latest = await document_service.get_latest_version(db, document_id)
+        file_data = latest.file_data if latest and latest.file_data else doc.file_data
+
+    if not file_data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="다운로드할 파일 데이터가 없습니다",
+        )
+
+    stem, ext = os.path.splitext(doc.original_filename or f"document_{document_id}")
+    if not ext:
+        ext = f".{doc.file_type.value}"
+    download_name = f"{stem}_수정본{ext}"
+
+    # ASCII fallback (non-ASCII는 _ 로 치환), RFC 5987 filename* 둘 다 제공
+    ascii_fallback = download_name.encode("ascii", "replace").decode("ascii").replace("?", "_")
+    encoded_name = quote(download_name)
+    content_disposition = (
+        f"attachment; filename=\"{ascii_fallback}\"; "
+        f"filename*=UTF-8''{encoded_name}"
+    )
+
+    return Response(
+        content=bytes(file_data),
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": content_disposition},
+    )
+
+
+@router.get(
+    "/{document_id}/html",
+    response_model=DocumentHtmlResponse,
+    summary="표 보존 HTML 렌더링 (편집/Diff 화면용)",
+)
+async def get_document_html(
+    document_id: int,
+    version: int | None = None,
+    db: AsyncSession = Depends(get_db),
+) -> DocumentHtmlResponse:
+    """HWP/HWPX 본문을 표가 <table>로 보존된 HTML 조각으로 렌더해 반환한다.
+
+    - version 지정 시: 해당 DocumentVersion.file_data
+    - version 미지정 시: 최신 버전 file_data, 없으면 document.file_data
+    응답: {"html": "<p>..</p><table>..</table>.."}
+    """
+    doc = await _get_document_or_404(document_id, db)
+
+    if version is not None:
+        target_version = await document_service.get_version_by_number(
+            db, document_id, version
+        )
+        if target_version is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"버전을 찾을 수 없습니다: {version}",
+            )
+        file_data = target_version.file_data
+    else:
+        latest = await document_service.get_latest_version(db, document_id)
+        file_data = latest.file_data if latest and latest.file_data else doc.file_data
+
+    if not file_data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="렌더링할 파일 데이터가 없습니다.",
+        )
+
+    from app.services.hwp_service import HwpParseError, render_hwp_to_html
+
+    try:
+        rendered = render_hwp_to_html(bytes(file_data), doc.file_type.value)
+    except HwpParseError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"HTML 렌더링 실패: {e}",
+        )
+
+    return DocumentHtmlResponse(html=rendered)
+
+
+@router.get(
+    "/{document_id}/html/compare",
+    response_model=DocumentCompareHtmlResponse,
+    summary="원본·수정본 비교 HTML 렌더링 (바뀐 셀/단어 하이라이트)",
+)
+async def get_document_compare_html(
+    document_id: int,
+    base: int = 1,
+    target: int | None = None,
+    db: AsyncSession = Depends(get_db),
+) -> DocumentCompareHtmlResponse:
+    """원본(base 버전)과 수정본(target 버전, 없으면 최신)을 비교해
+
+    바뀐 표 셀/문단 단어를 class="hwp-changed"로 강조한 HTML 쌍을 반환한다.
+    응답: {"original_html": "...", "modified_html": "..."}
+
+    버전 매핑:
+      - DocumentVersion.version_number 로 file_data를 가져온다.
+      - base/target 버전이 없으면 404.
+    """
+    doc = await _get_document_or_404(document_id, db)
+
+    base_version = await document_service.get_version_by_number(db, document_id, base)
+    if base_version is None or not base_version.file_data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"원본 버전을 찾을 수 없습니다: {base}",
+        )
+
+    if target is not None:
+        target_version = await document_service.get_version_by_number(
+            db, document_id, target
+        )
+    else:
+        target_version = await document_service.get_latest_version(db, document_id)
+
+    if target_version is None or not target_version.file_data:
+        detail = (
+            f"수정본 버전을 찾을 수 없습니다: {target}"
+            if target is not None
+            else "수정본 버전을 찾을 수 없습니다."
+        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
+
+    from app.services.hwp_service import HwpParseError, render_hwp_compare_html
+
+    try:
+        result = render_hwp_compare_html(
+            bytes(base_version.file_data),
+            bytes(target_version.file_data),
+            doc.file_type.value,
+        )
+    except HwpParseError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"비교 HTML 렌더링 실패: {e}",
+        )
+
+    return DocumentCompareHtmlResponse(**result)
 
 
 @router.get(

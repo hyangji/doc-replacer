@@ -362,7 +362,7 @@ export default function DocumentEditor({
           <Editor
             height="100%"
             defaultLanguage={language}
-            defaultValue={content}
+            value={content}
             theme="vs-dark"
             onMount={handleEditorMount}
             options={{

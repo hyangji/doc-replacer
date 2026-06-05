@@ -3,10 +3,10 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { useParams } from 'next/navigation';
 import { Alert, message, Modal, Tabs } from 'antd';
-import { EditOutlined, DiffOutlined, FileExcelOutlined } from '@ant-design/icons';
+import { EditOutlined, DiffOutlined, TableOutlined } from '@ant-design/icons';
 import DocumentEditor from '@/components/editor/DocumentEditor';
 import DiffViewer from '@/components/diff/DiffViewer';
-import ExcelUpload from '@/components/upload/ExcelUpload';
+import ComparisonUpload from '@/components/upload/ComparisonUpload';
 import PageHeader from '@/components/common/PageHeader';
 import LoadingSpinner from '@/components/common/LoadingSpinner';
 import { useDocumentStore } from '@/lib/stores/documentStore';
@@ -141,9 +141,9 @@ export default function EditorPage() {
     lines.push(modifiedDiffText ?? diffData.modified_text);
 
     const content = lines.join('\n');
-    const defaultName = `변경보고서_${currentDocument?.original_filename ?? 'document'}_v${diffData.version_number}`;
+    const defaultName = `변경내역_${currentDocument?.original_filename ?? 'document'}_v${diffData.version_number}`;
 
-    // File System Access API로 "다른 이름으로 저장" 대화상자 표시
+    // File System Access API로 "다른 이름으로 저장" 대화상자 표시 (텍스트 보고서이므로 .txt / .csv 만 허용)
     if ('showSaveFilePicker' in window) {
       try {
         const handle = await (window as unknown as { showSaveFilePicker: (opts: unknown) => Promise<FileSystemFileHandle> }).showSaveFilePicker({
@@ -151,13 +151,12 @@ export default function EditorPage() {
           types: [
             { description: '텍스트 파일', accept: { 'text/plain': ['.txt'] } },
             { description: 'CSV 파일', accept: { 'text/csv': ['.csv'] } },
-            { description: '모든 파일', accept: { 'application/octet-stream': ['.doc', '.hwp'] } },
           ],
         });
         const writable = await handle.createWritable();
         await writable.write(content);
         await writable.close();
-        message.success('변경 보고서가 저장되었습니다.');
+        message.success('변경 내역(텍스트)이 저장되었습니다.');
         return;
       } catch (e) {
         // 사용자가 취소한 경우
@@ -173,8 +172,26 @@ export default function EditorPage() {
     a.download = `${defaultName}.txt`;
     a.click();
     URL.revokeObjectURL(url);
-    message.success('변경 보고서가 다운로드되었습니다.');
+    message.success('변경 내역(텍스트)이 다운로드되었습니다.');
   }, [diffData, currentDocument, modifiedDiffText]);
+
+  const handleDownloadHwp = useCallback(async () => {
+    if (!diffData) return;
+    try {
+      message.loading({ content: '수정본 다운로드 중...', key: 'download-hwp' });
+      const { blob, filename } = await api.downloadDocument(documentId, diffData.version_number);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+      message.success({ content: '수정본 HWP 다운로드가 시작됩니다.', key: 'download-hwp' });
+    } catch {
+      // 에러 메시지는 인터셉터에서 표시됨
+      message.destroy('download-hwp');
+    }
+  }, [documentId, diffData]);
 
   if (isLoading && !currentDocument) {
     return <LoadingSpinner tip="문서를 불러오는 중..." />;
@@ -203,17 +220,17 @@ export default function EditorPage() {
       ),
     },
     {
-      key: 'excel',
+      key: 'comparison',
       label: (
         <span>
-          <FileExcelOutlined /> 엑셀 일괄 교체
+          <TableOutlined /> 대비표 일괄 수정
         </span>
       ),
       children: (
         <div style={{ padding: 16 }}>
-          <ExcelUpload
+          <ComparisonUpload
             documentId={String(documentId)}
-            onUploadComplete={handleExcelUploadComplete}
+            onApplyComplete={handleExcelUploadComplete}
           />
         </div>
       ),
@@ -233,9 +250,12 @@ export default function EditorPage() {
                 modifiedContent={diffData.modified_text}
                 originalTitle="원본 문서"
                 modifiedTitle="수정된 문서"
+                documentId={documentId}
+                modifiedVersion={diffData.version_number}
                 onRevertAll={handleRevert}
                 onSave={handleDiffSave}
                 onDownloadReport={handleDownloadReport}
+                onDownloadHwp={handleDownloadHwp}
                 onModifiedTextChange={setModifiedDiffText}
               />
             ),

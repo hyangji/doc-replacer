@@ -1,5 +1,5 @@
 {
   "env": {
-    "NEXT_PUBLIC_API_URL": "https://backend-wine-eight-21.vercel.app"
+    "NEXT_PUBLIC_API_URL": "/_/backend"
   }
 }

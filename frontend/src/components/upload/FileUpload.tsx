@@ -7,6 +7,8 @@ import type { UploadFile, UploadProps } from 'antd';
 
 const { Dragger } = Upload;
 
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? '';
+
 const DEFAULT_ACCEPT_TYPES = ['.hwp', '.hwpx', '.xlsx', '.xls'];
 const DEFAULT_MAX_SIZE = 50 * 1024 * 1024; // 50MB
 
@@ -29,7 +31,7 @@ export default function FileUpload({
   const uploadProps: UploadProps = {
     name: 'file',
     multiple: true,
-    action: '/api/documents/upload',
+    action: `${API_BASE}/api/documents/upload`,
     accept: acceptString,
     fileList,
     beforeUpload(file) {

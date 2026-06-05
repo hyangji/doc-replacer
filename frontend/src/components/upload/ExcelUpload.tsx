@@ -7,6 +7,8 @@ import type { UploadFile, UploadProps } from 'antd';
 
 const { Dragger } = Upload;
 
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? '';
+
 const MAX_SIZE = 50 * 1024 * 1024; // 50MB
 
 interface ReplacementResponse {
@@ -31,8 +33,8 @@ export default function ExcelUpload({
     name: 'file',
     multiple: false,
     action: documentId
-      ? `/api/documents/${documentId}/excel-upload`
-      : '/api/documents/excel-upload',
+      ? `${API_BASE}/api/documents/${documentId}/excel-upload`
+      : `${API_BASE}/api/documents/excel-upload`,
     accept: '.xlsx,.xls',
     fileList,
     maxCount: 1,

@@ -17,7 +17,7 @@ import type {
 const api = axios.create({
   baseURL: process.env.NEXT_PUBLIC_API_URL
     ? `${process.env.NEXT_PUBLIC_API_URL}/api`
-    : '/api',
+    : '/_/backend/api',
 });
 
 api.interceptors.response.use(

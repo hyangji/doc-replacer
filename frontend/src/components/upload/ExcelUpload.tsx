@@ -7,7 +7,7 @@ import type { UploadFile, UploadProps } from 'antd';
 
 const { Dragger } = Upload;
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? '';
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? '/_/backend';
 
 const MAX_SIZE = 50 * 1024 * 1024; // 50MB
 

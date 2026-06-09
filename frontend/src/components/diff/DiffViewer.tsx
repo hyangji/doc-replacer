@@ -9,7 +9,6 @@ import {
   DownOutlined,
   RollbackOutlined,
   SaveOutlined,
-  DownloadOutlined,
   FileWordOutlined,
   EditOutlined,
   EyeOutlined,
@@ -41,7 +40,6 @@ interface DiffViewerProps {
   modifiedVersion?: number;
   onRevertAll?: () => void;
   onSave?: (modifiedText?: string) => void;
-  onDownloadReport?: () => void;
   onDownloadHwp?: () => void;
   onModifiedTextChange?: (text: string) => void;
 }
@@ -138,7 +136,6 @@ export default function DiffViewer({
   modifiedVersion,
   onRevertAll,
   onSave,
-  onDownloadReport,
   onDownloadHwp,
   onModifiedTextChange,
 }: DiffViewerProps) {
@@ -817,7 +814,6 @@ export default function DiffViewer({
           {changedLines.length > 0 && (
             <Button danger icon={<RollbackOutlined />} onClick={onRevertAll}>모두 되돌리기</Button>
           )}
-          <Button icon={<DownloadOutlined />} onClick={onDownloadReport}>변경 내역(텍스트) 다운로드</Button>
           {onDownloadHwp && (
             <Button icon={<FileWordOutlined />} onClick={onDownloadHwp}>수정본 HWP 다운로드</Button>
           )}

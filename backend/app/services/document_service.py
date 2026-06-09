@@ -157,39 +157,6 @@ async def create_version(
     return version
 
 
-async def create_preview_version(
-    db: AsyncSession,
-    document: Document,
-    new_file_data: bytes,
-    new_content_text: str | None,
-    changes_summary: str,
-) -> DocumentVersion:
-    """Create a new version WITHOUT updating the document's current content.
-
-    Used for Excel batch replace: the user reviews the diff first,
-    and only when they explicitly click "Save" does the document update.
-    """
-    latest = await get_latest_version(db, document.id)
-    next_version = (latest.version_number + 1) if latest else 1
-
-    version = DocumentVersion(
-        document_id=document.id,
-        version_number=next_version,
-        file_path="db",
-        file_data=new_file_data,
-        content_text=new_content_text,
-        changes_summary=changes_summary,
-    )
-    db.add(version)
-
-    # NOTE: document.file_data / content_text are NOT updated here.
-    # The user must explicitly save from the Diff view.
-
-    await db.commit()
-    await db.refresh(version)
-    return version
-
-
 async def get_version_by_number(
     db: AsyncSession, document_id: int, version_number: int
 ) -> DocumentVersion | None:
@@ -268,7 +235,10 @@ async def replace_in_document(
             f"일괄 교체: {len(replacements)}건 요청, "
             f"{applied_count}건 매칭, {total_count}건 수정"
         )
-        version = await create_preview_version(db, document, current_data, new_content, summary)
+        # 대비표 적용을 즉시 본문(document.content_text/file_data)에 반영한다.
+        # 이렇게 해야 편집 탭이 적용분을 보여주고, HWP 직접수정 저장이
+        # 최신 버전을 기준으로 손편집만 누적 합성한다.
+        version = await create_version(db, document, current_data, new_content, summary)
         return total_count, version.version_number
 
     return 0, 0
@@ -335,16 +305,74 @@ async def save_document_content(
     document: Document,
     content: str,
 ) -> Document:
-    """에디터에서 수정한 내용을 HWPX 파일에 저장."""
-    if document.file_type != FileType.HWPX:
-        raise DocumentServiceError("현재 HWPX 파일만 저장을 지원합니다.")
+    """에디터에서 수정한 내용을 HWP/HWPX 파일에 저장.
+
+    - HWPX: 원본 ZIP의 <t> 텍스트 요소들을 새 텍스트 라인으로 순서대로 덮어쓴다.
+    - HWP : 최신 버전을 기준으로 라인 단위 diff를 구해, 바뀐 라인마다
+            replace_text(old_line → new_line)로 바이너리를 치환한다.
+            (대비표 적용분 위에 손편집만 누적되도록 최신 버전을 기준으로 함)
+    """
+    import logging
+
+    logger = logging.getLogger(__name__)
+
     if not document.file_data:
         raise DocumentServiceError("파일 데이터가 없습니다.")
 
-    new_data = await hwp_service.save_file(document.file_data, content)
-    await create_version(db, document, new_data, content, "에디터에서 직접 수정")
-    await db.refresh(document)
-    return document
+    # ── HWPX: 기존 동작 그대로 ──
+    if document.file_type == FileType.HWPX:
+        new_data = await hwp_service.save_file(document.file_data, content)
+        await create_version(db, document, new_data, content, "에디터에서 직접 수정")
+        await db.refresh(document)
+        return document
+
+    # ── HWP 바이너리: 라인 단위 diff → replace_text 누적 치환 ──
+    if document.file_type == FileType.HWP:
+        # 최신 버전(대비표 적용분 포함)을 기준으로 삼아 손편집을 그 위에 누적한다.
+        latest = await get_latest_version(db, document.id)
+        base_data = latest.file_data if latest and latest.file_data else document.file_data
+
+        old_text = await hwp_service.get_text_content(base_data, "hwp")
+        old_lines = old_text.split("\n")
+        new_lines = content.split("\n")
+
+        current_data = base_data
+        changed_count = 0
+
+        # 인덱스로 두 리스트를 짝지어 비교한다. 라인 내용이 바뀌었고
+        # 기존 라인이 공백이 아닌 경우에만 바이너리 치환을 적용한다.
+        for idx, old_line in enumerate(old_lines):
+            if idx >= len(new_lines):
+                # 라인이 삭제된 경우. 바이너리에서 구조적 삭제는 이번 범위 밖이므로
+                # 치환하지 않고 로깅만 한다(값 치환 중심 앱이라 허용).
+                logger.info(
+                    "HWP 직접수정: 라인 삭제는 미지원(무시) idx=%s, old=%r", idx, old_line
+                )
+                continue
+            new_line = new_lines[idx]
+            if old_line != new_line and old_line.strip():
+                current_data, _ = hwp_service.replace_text(
+                    current_data, old_line, new_line, file_type="hwp"
+                )
+                changed_count += 1
+
+        # 새로 추가된 라인(인덱스 초과분)은 구조적 삽입이 어려워 이번 범위에서는 무시.
+        if len(new_lines) > len(old_lines):
+            logger.info(
+                "HWP 직접수정: 추가된 라인 %s개는 미지원(무시)",
+                len(new_lines) - len(old_lines),
+            )
+
+        if changed_count == 0:
+            logger.info("HWP 직접수정: 변경된 라인이 없습니다.")
+
+        await create_version(
+            db, document, current_data, content, "에디터에서 직접 수정"
+        )
+        await db.refresh(document)
+        return document
+
+    raise DocumentServiceError("현재 HWP/HWPX 파일만 저장을 지원합니다.")
 
 
 # ── Delete ──

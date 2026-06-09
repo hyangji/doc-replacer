@@ -3,8 +3,9 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { useParams } from 'next/navigation';
 import { Alert, message, Modal, Tabs } from 'antd';
-import { EditOutlined, DiffOutlined, TableOutlined } from '@ant-design/icons';
+import { EditOutlined, DiffOutlined, TableOutlined, FileTextOutlined } from '@ant-design/icons';
 import DocumentEditor from '@/components/editor/DocumentEditor';
+import DocumentPreview from '@/components/editor/DocumentPreview';
 import DiffViewer from '@/components/diff/DiffViewer';
 import ComparisonUpload from '@/components/upload/ComparisonUpload';
 import PageHeader from '@/components/common/PageHeader';
@@ -27,7 +28,7 @@ export default function EditorPage() {
     setDiffData,
   } = useDocumentStore();
 
-  const [activeTab, setActiveTab] = useState('edit');
+  const [activeTab, setActiveTab] = useState('preview');
   const [editorContent, setEditorContent] = useState('');
   const [modifiedDiffText, setModifiedDiffText] = useState<string | null>(null);
 
@@ -125,61 +126,38 @@ export default function EditorPage() {
     }
   }, [documentId, diffData, modifiedDiffText, fetchDocument]);
 
-  const handleDownloadReport = useCallback(async () => {
-    if (!diffData) return;
-
-    const lines: string[] = [];
-    lines.push('=== 변경 보고서 ===');
-    lines.push(`문서: ${currentDocument?.original_filename ?? ''}`);
-    lines.push(`생성일: ${new Date().toLocaleDateString('ko-KR')}`);
-    lines.push(`버전: ${diffData.version_number}`);
-    lines.push('');
-    lines.push('--- 원본 ---');
-    lines.push(diffData.original_text);
-    lines.push('');
-    lines.push('--- 수정본 ---');
-    lines.push(modifiedDiffText ?? diffData.modified_text);
-
-    const content = lines.join('\n');
-    const defaultName = `변경내역_${currentDocument?.original_filename ?? 'document'}_v${diffData.version_number}`;
-
-    // File System Access API로 "다른 이름으로 저장" 대화상자 표시 (텍스트 보고서이므로 .txt / .csv 만 허용)
-    if ('showSaveFilePicker' in window) {
-      try {
-        const handle = await (window as unknown as { showSaveFilePicker: (opts: unknown) => Promise<FileSystemFileHandle> }).showSaveFilePicker({
-          suggestedName: defaultName,
-          types: [
-            { description: '텍스트 파일', accept: { 'text/plain': ['.txt'] } },
-            { description: 'CSV 파일', accept: { 'text/csv': ['.csv'] } },
-          ],
-        });
-        const writable = await handle.createWritable();
-        await writable.write(content);
-        await writable.close();
-        message.success('변경 내역(텍스트)이 저장되었습니다.');
-        return;
-      } catch (e) {
-        // 사용자가 취소한 경우
-        if (e instanceof DOMException && e.name === 'AbortError') return;
-      }
-    }
-
-    // fallback: 브라우저가 showSaveFilePicker를 지원하지 않는 경우
-    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${defaultName}.txt`;
-    a.click();
-    URL.revokeObjectURL(url);
-    message.success('변경 내역(텍스트)이 다운로드되었습니다.');
-  }, [diffData, currentDocument, modifiedDiffText]);
-
   const handleDownloadHwp = useCallback(async () => {
     if (!diffData) return;
+
+    // 미저장 편집 자동저장 판정
+    const editorDirty = editorContent !== (currentDocument?.content_text ?? '');
+    const diffDirty =
+      modifiedDiffText != null &&
+      diffData != null &&
+      modifiedDiffText !== diffData.modified_text;
+
+    // 두 곳에서 모두 수정 → 충돌 위험. 데이터 손실 방지 위해 중단.
+    if (editorDirty && diffDirty) {
+      message.warning(
+        '편집 탭과 Diff에서 모두 수정했습니다. 먼저 저장(또는 한쪽 정리) 후 다운로드해 주세요.',
+      );
+      return;
+    }
+
     try {
+      // 미저장 편집이 있으면 다운로드 전에 자동저장 후 새로고침
+      if (editorDirty || diffDirty) {
+        message.loading({ content: '변경사항 저장 중...', key: 'download-hwp' });
+        if (editorDirty) {
+          await saveDocument(documentId, editorContent);
+        } else {
+          await api.saveDocument(documentId, modifiedDiffText as string);
+        }
+        await fetchDocument(documentId);
+      }
+
       message.loading({ content: '수정본 다운로드 중...', key: 'download-hwp' });
-      const { blob, filename } = await api.downloadDocument(documentId, diffData.version_number);
+      const { blob, filename } = await api.downloadDocument(documentId);
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -188,10 +166,18 @@ export default function EditorPage() {
       URL.revokeObjectURL(url);
       message.success({ content: '수정본 HWP 다운로드가 시작됩니다.', key: 'download-hwp' });
     } catch {
-      // 에러 메시지는 인터셉터에서 표시됨
+      // 에러 메시지는 인터셉터에서 표시됨 (저장 실패 시 다운로드 중단)
       message.destroy('download-hwp');
     }
-  }, [documentId, diffData]);
+  }, [
+    documentId,
+    diffData,
+    editorContent,
+    currentDocument?.content_text,
+    modifiedDiffText,
+    saveDocument,
+    fetchDocument,
+  ]);
 
   if (isLoading && !currentDocument) {
     return <LoadingSpinner tip="문서를 불러오는 중..." />;
@@ -201,6 +187,20 @@ export default function EditorPage() {
   // The editor UI will still render below so users can start working.
 
   const tabItems = [
+    {
+      key: 'preview',
+      label: (
+        <span>
+          <FileTextOutlined /> 미리보기
+        </span>
+      ),
+      children: (
+        <DocumentPreview
+          key={currentDocument?.updated_at ?? documentId}
+          documentId={documentId}
+        />
+      ),
+    },
     {
       key: 'edit',
       label: (
@@ -254,7 +254,6 @@ export default function EditorPage() {
                 modifiedVersion={diffData.version_number}
                 onRevertAll={handleRevert}
                 onSave={handleDiffSave}
-                onDownloadReport={handleDownloadReport}
                 onDownloadHwp={handleDownloadHwp}
                 onModifiedTextChange={setModifiedDiffText}
               />

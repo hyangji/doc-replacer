@@ -24,6 +24,7 @@ from app.schemas.document import (
     ReplacementResponse,
     ReplaceTextRequest,
     ReplaceTextResponse,
+    SaveBlocksRequest,
     SearchRequest,
     SearchResult,
     VersionSummary,
@@ -405,6 +406,28 @@ async def revert_document(
 
 
 @router.post(
+    "/{document_id}/reset",
+    response_model=DocumentDetail,
+    summary="원본(v1)으로 초기화",
+)
+async def reset_document(
+    document_id: int,
+    db: AsyncSession = Depends(get_db),
+) -> DocumentDetail:
+    """문서를 원본(version 1) 상태로 초기화한다.
+
+    대비표 적용·손편집 등으로 누적된 모든 변경을 해제하고, 원본 내용으로
+    새 버전을 만들어 latest 로 둔다. 이후 diff(원본 vs 최신)는 '변경 없음'.
+    """
+    doc = await _get_document_or_404(document_id, db)
+    try:
+        updated_doc = await document_service.reset_to_original(db, doc)
+    except DocumentServiceError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    return DocumentDetail.model_validate(updated_doc)
+
+
+@router.post(
     "/{document_id}/save",
     response_model=DocumentDetail,
     status_code=status.HTTP_200_OK,
@@ -504,13 +527,16 @@ async def download_document(
 async def get_document_html(
     document_id: int,
     version: int | None = None,
+    editable: bool = False,
     db: AsyncSession = Depends(get_db),
 ) -> DocumentHtmlResponse:
     """HWP/HWPX 본문을 표가 <table>로 보존된 HTML 조각으로 렌더해 반환한다.
 
     - version 지정 시: 해당 DocumentVersion.file_data
     - version 미지정 시: 최신 버전 file_data, 없으면 document.file_data
-    응답: {"html": "<p>..</p><table>..</table>.."}
+    - editable=true 시: 편집 영역(표 밖 <p>, 표 셀 <td>)에 data-eid(0..N-1)를 부여.
+      이 eid 는 POST /{id}/save-blocks 의 edits[].eid 와 동일하게 매핑된다.
+    응답: {"html": "<p data-eid=..>..</p><table>..<td data-eid=..>..</td>..</table>.."}
     """
     doc = await _get_document_or_404(document_id, db)
 
@@ -537,7 +563,9 @@ async def get_document_html(
     from app.services.hwp_service import HwpParseError, render_hwp_to_html
 
     try:
-        rendered = render_hwp_to_html(bytes(file_data), doc.file_type.value)
+        rendered = render_hwp_to_html(
+            bytes(file_data), doc.file_type.value, editable=editable
+        )
     except HwpParseError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -545,6 +573,33 @@ async def get_document_html(
         )
 
     return DocumentHtmlResponse(html=rendered)
+
+
+@router.post(
+    "/{document_id}/save-blocks",
+    response_model=DocumentDetail,
+    status_code=status.HTTP_200_OK,
+    summary="구조 보존 인라인 편집 저장 (data-eid 영역 텍스트)",
+)
+async def save_document_blocks(
+    document_id: int,
+    body: SaveBlocksRequest,
+    db: AsyncSession = Depends(get_db),
+) -> DocumentDetail:
+    """편집 영역(data-eid)의 새 텍스트만 원본 HWP/HWPX 에 무손실 반영해 저장한다.
+
+    body: {"edits": [{"eid": int, "text": str}, ...]}
+      - eid 는 GET /{id}/html?editable=true 응답의 data-eid 와 동일.
+      - 표 구조·서식은 변경하지 않고 해당 영역의 텍스트만 교체한다.
+    응답: DocumentDetail (새 버전이 versions 에 추가됨).
+    """
+    doc = await _get_document_or_404(document_id, db)
+    try:
+        edits = [e.model_dump() for e in body.edits]
+        updated_doc = await document_service.save_document_blocks(db, doc, edits)
+    except DocumentServiceError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    return DocumentDetail.model_validate(updated_doc)
 
 
 @router.get(
@@ -556,6 +611,7 @@ async def get_document_compare_html(
     document_id: int,
     base: int = 1,
     target: int | None = None,
+    editable: bool = False,
     db: AsyncSession = Depends(get_db),
 ) -> DocumentCompareHtmlResponse:
     """원본(base 버전)과 수정본(target 버전, 없으면 최신)을 비교해
@@ -566,6 +622,12 @@ async def get_document_compare_html(
     버전 매핑:
       - DocumentVersion.version_number 로 file_data를 가져온다.
       - base/target 버전이 없으면 404.
+
+    editable=true 면 modified_html 에 data-eid(편집 좌표) 와 변경 영역의
+    data-orig(원본 텍스트, 셀별 되돌리기용)를 부여한다.
+    이 data-eid 는 POST /{id}/save-blocks 의 edits[].eid 와 동일하게 매핑된다.
+    original_html 에도 동일한 data-eid 가 1:1로 부여되어(수정본 셀 클릭 → 원본
+    같은 셀 강조용) 정렬되며, 원본은 data-orig/contenteditable 없이 eid 만 갖는다.
     """
     doc = await _get_document_or_404(document_id, db)
 
@@ -598,6 +660,7 @@ async def get_document_compare_html(
             bytes(base_version.file_data),
             bytes(target_version.file_data),
             doc.file_type.value,
+            editable=editable,
         )
     except HwpParseError as e:
         raise HTTPException(

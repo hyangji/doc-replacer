@@ -1,12 +1,17 @@
 'use client';
 
-import React, { useEffect, useState, useCallback } from 'react';
-import { useParams } from 'next/navigation';
-import { Alert, message, Modal, Tabs } from 'antd';
-import { EditOutlined, DiffOutlined, TableOutlined, FileTextOutlined } from '@ant-design/icons';
-import DocumentEditor from '@/components/editor/DocumentEditor';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
+import { useParams, useRouter } from 'next/navigation';
+import { Alert, Button, Empty, message, Modal, Space, Spin, Tabs, Tag } from 'antd';
+import {
+  DiffOutlined,
+  TableOutlined,
+  FileTextOutlined,
+  RollbackOutlined,
+  FolderOpenOutlined,
+} from '@ant-design/icons';
 import DocumentPreview from '@/components/editor/DocumentPreview';
-import DiffViewer from '@/components/diff/DiffViewer';
+import DiffViewer, { type DiffViewerHandle } from '@/components/diff/DiffViewer';
 import ComparisonUpload from '@/components/upload/ComparisonUpload';
 import PageHeader from '@/components/common/PageHeader';
 import LoadingSpinner from '@/components/common/LoadingSpinner';
@@ -15,6 +20,7 @@ import * as api from '@/lib/api';
 
 export default function EditorPage() {
   const params = useParams();
+  const router = useRouter();
   const documentId = Number(params.id);
 
   const {
@@ -23,80 +29,58 @@ export default function EditorPage() {
     error,
     diffData,
     fetchDocument,
-    saveDocument,
-    revertDocument,
     setDiffData,
   } = useDocumentStore();
 
   const [activeTab, setActiveTab] = useState('preview');
-  const [editorContent, setEditorContent] = useState('');
   const [modifiedDiffText, setModifiedDiffText] = useState<string | null>(null);
+  // 문서 모드 미저장 손편집 존재 여부(다운로드 전 자동저장 판단용)
+  const [docDirty, setDocDirty] = useState(false);
+  // 대비표 업로드 패널 초기화용 key(증가시키면 ComparisonUpload가 remount되어 미리보기·구간현황 등 비워짐)
+  const [comparisonKey, setComparisonKey] = useState(0);
+  const diffViewerRef = useRef<DiffViewerHandle>(null);
 
   useEffect(() => {
-    if (documentId) {
-      fetchDocument(documentId);
-    }
-  }, [documentId, fetchDocument]);
-
-  // Sync editor content when document loads
-  useEffect(() => {
-    if (currentDocument?.content_text != null) {
-      setEditorContent(currentDocument.content_text);
-    }
-  }, [currentDocument?.content_text]);
-
-  const handleSave = useCallback(
-    async (content: string) => {
+    if (!documentId) return;
+    let cancelled = false;
+    (async () => {
+      await fetchDocument(documentId);
       try {
-        await saveDocument(documentId, content);
-        message.success('저장되었습니다.');
+        const diff = await api.getDiff(documentId);
+        if (!cancelled) setDiffData(diff);
       } catch {
         // error already shown by interceptor
       }
-    },
-    [documentId, saveDocument],
-  );
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [documentId, fetchDocument, setDiffData]);
 
-  const handleRevert = useCallback(() => {
-    if (!currentDocument || currentDocument.versions.length === 0) {
-      message.warning('되돌릴 버전이 없습니다.');
-      return;
-    }
-    const latestVersion = currentDocument.versions[0];
+  const handleReset = useCallback(() => {
     Modal.confirm({
-      title: '문서 되돌리기',
-      content: `버전 ${latestVersion.version_number}(으)로 되돌리시겠습니까?`,
-      okText: '되돌리기',
+      title: '원본으로 초기화',
+      content:
+        '적용한 대비표와 직접 수정한 내용이 모두 초기화되고 원본 문서로 돌아갑니다. 계속할까요?',
+      okText: '초기화',
       cancelText: '취소',
+      okButtonProps: { danger: true },
       async onOk() {
         try {
-          await revertDocument(documentId, latestVersion.version_number);
-          message.success('문서가 되돌려졌습니다.');
+          await api.resetDocument(documentId);
+          // 새 버전(원본 내용) 기준으로 비교/문서 갱신
+          const diff = await api.getDiff(documentId);
+          setDiffData(diff);
+          await fetchDocument(documentId);
+          // 대비표 탭의 미리보기/구간 처리 현황 등 이전 엑셀 잔여 상태도 함께 비움
+          setComparisonKey((k) => k + 1);
+          message.success('원본으로 초기화되었습니다.');
         } catch {
           // error already shown by interceptor
         }
       },
     });
-  }, [documentId, currentDocument, revertDocument]);
-
-  const handleConvert = useCallback(
-    async (format: 'docx' | 'pdf') => {
-      try {
-        message.loading({ content: '변환 중...', key: 'convert' });
-        const blob = await api.convertDocument(documentId, format);
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `${currentDocument?.original_filename ?? 'document'}.${format}`;
-        a.click();
-        URL.revokeObjectURL(url);
-        message.success({ content: '변환 완료. 다운로드가 시작됩니다.', key: 'convert' });
-      } catch {
-        message.error({ content: '변환에 실패했습니다.', key: 'convert' });
-      }
-    },
-    [documentId, currentDocument],
-  );
+  }, [documentId, setDiffData, fetchDocument]);
 
   const handleExcelUploadComplete = useCallback(() => {
     api.getDiff(documentId)
@@ -111,48 +95,41 @@ export default function EditorPage() {
       });
   }, [documentId, setDiffData, fetchDocument]);
 
-  const handleDiffSave = useCallback(async (textFromDiff?: string) => {
-    if (!diffData) {
-      message.warning('비교할 데이터가 없습니다.');
-      return;
-    }
-    try {
-      const textToSave = textFromDiff || modifiedDiffText || diffData.modified_text;
-      await api.saveDocument(documentId, textToSave);
-      message.success('저장되었습니다.');
-      await fetchDocument(documentId);
-    } catch {
-      message.error('저장에 실패했습니다.');
-    }
-  }, [documentId, diffData, modifiedDiffText, fetchDocument]);
+  // 문서 모드 인라인 편집(save-blocks) 저장 성공 → 새 버전으로 비교/문서 갱신
+  const handleDocSaved = useCallback(() => {
+    api.getDiff(documentId)
+      .then((diff) => {
+        setDiffData(diff);
+        fetchDocument(documentId);
+      })
+      .catch(() => {
+        // error handled by interceptor
+      });
+  }, [documentId, setDiffData, fetchDocument]);
 
   const handleDownloadHwp = useCallback(async () => {
     if (!diffData) return;
 
-    // 미저장 편집 자동저장 판정
-    const editorDirty = editorContent !== (currentDocument?.content_text ?? '');
     const diffDirty =
       modifiedDiffText != null &&
-      diffData != null &&
       modifiedDiffText !== diffData.modified_text;
 
-    // 두 곳에서 모두 수정 → 충돌 위험. 데이터 손실 방지 위해 중단.
-    if (editorDirty && diffDirty) {
-      message.warning(
-        '편집 탭과 Diff에서 모두 수정했습니다. 먼저 저장(또는 한쪽 정리) 후 다운로드해 주세요.',
-      );
-      return;
-    }
-
     try {
-      // 미저장 편집이 있으면 다운로드 전에 자동저장 후 새로고침
-      if (editorDirty || diffDirty) {
-        message.loading({ content: '변경사항 저장 중...', key: 'download-hwp' });
-        if (editorDirty) {
-          await saveDocument(documentId, editorContent);
-        } else {
-          await api.saveDocument(documentId, modifiedDiffText as string);
+      // 문서 모드 미저장 손편집(셀 단위 save-blocks)이 있으면 먼저 자동저장
+      const docHasDirty =
+        docDirty || (diffViewerRef.current?.hasDocDirty() ?? false);
+      if (docHasDirty && diffViewerRef.current) {
+        message.loading({ content: '문서 편집 저장 중...', key: 'download-hwp' });
+        const saved = await diffViewerRef.current.saveDocBlocks();
+        if (saved) {
+          await fetchDocument(documentId);
         }
+      }
+
+      // 미저장 Diff(텍스트) 편집이 있으면 다운로드 전에 자동저장 후 새로고침
+      if (diffDirty) {
+        message.loading({ content: '변경사항 저장 중...', key: 'download-hwp' });
+        await api.saveDocument(documentId, modifiedDiffText as string);
         await fetchDocument(documentId);
       }
 
@@ -172,12 +149,57 @@ export default function EditorPage() {
   }, [
     documentId,
     diffData,
-    editorContent,
-    currentDocument?.content_text,
     modifiedDiffText,
-    saveDocument,
+    docDirty,
     fetchDocument,
   ]);
+
+  // 상태 배지: diffData 기준으로 원본/적용됨 판정 + 변경 라인 수 계산
+  const isApplied =
+    diffData != null && diffData.original_text !== diffData.modified_text;
+  const changedLineCount = (() => {
+    if (!isApplied || !diffData) return 0;
+    const origLines = diffData.original_text.split('\n');
+    const modLines = diffData.modified_text.split('\n');
+    const maxLen = Math.max(origLines.length, modLines.length);
+    let count = 0;
+    for (let i = 0; i < maxLen; i++) {
+      if ((origLines[i] ?? '') !== (modLines[i] ?? '')) count += 1;
+    }
+    return count;
+  })();
+  const statusBadge = diffData ? (
+    isApplied ? (
+      <Tag color="processing">
+        대비표 적용됨{changedLineCount > 0 ? ` (${changedLineCount}건)` : ''}
+      </Tag>
+    ) : (
+      <Tag>원본</Tag>
+    )
+  ) : null;
+
+  // 상태 배지 + '원본으로 초기화' + '새 문서 열기'(다른 원본 HWP 업로드/선택 진입점)
+  const headerActions = (
+    <Space size={8} align="center">
+      {statusBadge}
+      <Button
+        size="small"
+        danger
+        icon={<RollbackOutlined />}
+        disabled={!isApplied}
+        onClick={handleReset}
+      >
+        원본으로 초기화
+      </Button>
+      <Button
+        size="small"
+        icon={<FolderOpenOutlined />}
+        onClick={() => router.push('/documents')}
+      >
+        새 문서 열기
+      </Button>
+    </Space>
+  );
 
   if (isLoading && !currentDocument) {
     return <LoadingSpinner tip="문서를 불러오는 중..." />;
@@ -202,24 +224,6 @@ export default function EditorPage() {
       ),
     },
     {
-      key: 'edit',
-      label: (
-        <span>
-          <EditOutlined /> 편집
-        </span>
-      ),
-      children: (
-        <div style={{ height: 'calc(100vh - 220px)' }}>
-          <DocumentEditor
-            content={editorContent}
-            onChange={setEditorContent}
-            onSave={handleSave}
-            documentId={String(documentId)}
-          />
-        </div>
-      ),
-    },
-    {
       key: 'comparison',
       label: (
         <span>
@@ -229,38 +233,65 @@ export default function EditorPage() {
       children: (
         <div style={{ padding: 16 }}>
           <ComparisonUpload
+            key={comparisonKey}
             documentId={String(documentId)}
             onApplyComplete={handleExcelUploadComplete}
+            hasExistingWork={
+              diffData != null &&
+              diffData.original_text !== diffData.modified_text
+            }
           />
         </div>
       ),
     },
-    ...(diffData
-      ? [
-          {
-            key: 'diff',
-            label: (
-              <span>
-                <DiffOutlined /> Diff 비교
-              </span>
-            ),
-            children: (
-              <DiffViewer
-                originalContent={diffData.original_text}
-                modifiedContent={diffData.modified_text}
-                originalTitle="원본 문서"
-                modifiedTitle="수정된 문서"
-                documentId={documentId}
-                modifiedVersion={diffData.version_number}
-                onRevertAll={handleRevert}
-                onSave={handleDiffSave}
-                onDownloadHwp={handleDownloadHwp}
-                onModifiedTextChange={setModifiedDiffText}
-              />
-            ),
-          },
-        ]
-      : []),
+    {
+      key: 'diff',
+      label: (
+        <span>
+          <DiffOutlined /> Diff 비교
+        </span>
+      ),
+      children:
+        diffData == null ? (
+          <div style={{ padding: 48, textAlign: 'center' }}>
+            <Spin tip="비교 데이터를 불러오는 중..." />
+          </div>
+        ) : !isApplied ? (
+          <div style={{ padding: 48 }}>
+            <Empty
+              description={
+                <span>
+                  아직 대비표가 적용되지 않았습니다.
+                  <br />
+                  먼저 &lsquo;대비표 일괄 수정&rsquo; 탭에서 엑셀 파일을 업로드하세요.
+                </span>
+              }
+            >
+              <Button
+                type="primary"
+                icon={<TableOutlined />}
+                onClick={() => setActiveTab('comparison')}
+              >
+                대비표 일괄 수정으로 이동
+              </Button>
+            </Empty>
+          </div>
+        ) : (
+          <DiffViewer
+            ref={diffViewerRef}
+            originalContent={diffData.original_text}
+            modifiedContent={diffData.modified_text}
+            originalTitle="원본 문서"
+            modifiedTitle="수정된 문서"
+            documentId={documentId}
+            modifiedVersion={diffData.version_number}
+            onDownloadHwp={handleDownloadHwp}
+            onModifiedTextChange={setModifiedDiffText}
+            onDocSaved={handleDocSaved}
+            onDocDirtyChange={setDocDirty}
+          />
+        ),
+    },
   ];
 
   return (
@@ -268,9 +299,10 @@ export default function EditorPage() {
       <PageHeader
         title={currentDocument?.original_filename ?? '문서 편집기'}
         breadcrumb={[
-          { title: '홈', href: '/' },
+          { title: '문서 작업', href: '/documents' },
           { title: currentDocument?.original_filename ?? '문서 편집기' },
         ]}
+        actions={headerActions}
       />
 
       {error && !currentDocument && (

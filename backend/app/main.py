@@ -37,6 +37,9 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # 다운로드 파일명(원본명_수정본)을 프론트(JS)가 읽을 수 있도록 노출.
+    # 미설정 시 cross-origin에서 Content-Disposition이 가려져 기본 파일명으로 폴백됨.
+    expose_headers=["Content-Disposition"],
 )
 
 from app.routers import documents_router

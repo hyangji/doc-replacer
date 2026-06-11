@@ -36,7 +36,7 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
       const documents = await api.getDocuments();
       set({ documents });
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : '문서 목록을 불러오지 못했습니다.';
+      const msg = e instanceof Error ? e.message : '작업 문서를 불러오지 못했습니다.';
       set({ error: msg });
     } finally {
       set({ isLoading: false });

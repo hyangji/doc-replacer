@@ -530,6 +530,92 @@ class HwpService:
         return b"".join(new_segments), total_count, first_edit_pos, delta
 
     @staticmethod
+    def _set_hwp_para_text(
+        text_data: bytes, new_text: str
+    ) -> tuple[bytes, int, int]:
+        """PARA_TEXT 레코드의 *printable 텍스트 전체*를 new_text로 치환한다.
+
+        제어문자(0/10/13)와 확장 제어문자(14바이트 inline payload)는 모두 보존하고,
+        printable WCHAR 구간만 전부 제거한 뒤 new_text를 첫 printable 위치에 한 번에
+        넣는다. (구조 보존 인라인 편집용 — 검색치환 _build_hwp_para_text 를 본뜸.)
+
+        반환: (new_payload_bytes, delta, edit_pos)
+          - delta: 문단 길이 변화(WCHAR position 단위). printable 글자는 1 position.
+          - edit_pos: 변경이 시작되는 문단-내 position. 변경 없으면 -1.
+
+        동작 규칙:
+          - 원본의 printable 글자들을 모두 제거하고, new_text 전체를 *첫 번째 printable
+            구간이 시작되던 position*에 삽입한다. 제어문자는 제자리에 그대로 남는다.
+          - 원본에 printable 구간이 전혀 없으면(제어문자뿐) 맨 앞(position 0)에 삽입한다.
+          - new_text가 기존 printable 텍스트와 동일하면 delta=0, edit_pos=-1 로 반환.
+        """
+        # 세그먼트 분해: (is_text, data, start_pos)
+        segments: list[tuple[bool, bytes, int]] = []
+        text_chars: list[str] = []
+        seg_start = 0
+        cur_pos = 0
+        i = 0
+        first_text_pos: int | None = None
+        while i < len(text_data) - 1:
+            ch = struct.unpack_from("<H", text_data, i)[0]
+            if ch < 32:
+                if text_chars:
+                    segments.append(
+                        (True, "".join(text_chars).encode("utf-16-le"), seg_start)
+                    )
+                    text_chars = []
+                if ch in (0, 10, 13):
+                    segments.append((False, text_data[i : i + 2], cur_pos))
+                    i += 2
+                    cur_pos += 1
+                else:
+                    segments.append((False, text_data[i : i + 16], cur_pos))
+                    i += 16
+                    cur_pos += 8
+                seg_start = cur_pos
+            else:
+                if not text_chars:
+                    seg_start = cur_pos
+                    if first_text_pos is None:
+                        first_text_pos = cur_pos
+                text_chars.append(chr(ch))
+                i += 2
+                cur_pos += 1
+        if text_chars:
+            segments.append((True, "".join(text_chars).encode("utf-16-le"), seg_start))
+
+        # 기존 printable 전체 텍스트
+        old_full = "".join(
+            seg.decode("utf-16-le") for is_t, seg, _ in segments if is_t
+        )
+        if old_full == new_text:
+            return text_data, 0, -1
+
+        insert_pos = first_text_pos if first_text_pos is not None else 0
+        old_len = len(old_full)
+        new_len = len(new_text)
+        delta = new_len - old_len
+        edit_pos = insert_pos
+
+        # 재조립: 제어문자는 그대로, printable 구간은 모두 비우되 첫 printable
+        # 자리에 new_text 한 덩어리를 넣는다.
+        out_parts: list[bytes] = []
+        inserted = False
+        for is_text, seg_data, _start in segments:
+            if is_text:
+                if not inserted:
+                    out_parts.append(new_text.encode("utf-16-le"))
+                    inserted = True
+                # 이후 text 세그먼트는 비움(삭제)
+            else:
+                out_parts.append(seg_data)
+        if not inserted:
+            # printable 구간이 없던 경우(제어문자뿐): 맨 앞에 삽입
+            out_parts.insert(0, new_text.encode("utf-16-le"))
+
+        return b"".join(out_parts), delta, edit_pos
+
+    @staticmethod
     def _count_para_text_positions(text_data: bytes) -> int:
         """Count paragraph char-positions (WCHAR units) in a PARA_TEXT payload.
 
@@ -1453,7 +1539,186 @@ def _render_hwpx_to_html(file_data: bytes) -> str:
     return "\n".join(_serialize_hwpx_block(b) for b in blocks)
 
 
-def render_hwp_to_html(file_data: bytes, file_type: str) -> str:
+# ─────────────────────────────────────────────────────────────────────────────
+# 구조 보존 인라인 텍스트 편집 (A안) — data-eid 부여 렌더 + 위치기반 텍스트 교체
+#
+# 핵심 규칙:
+#   - 편집 가능한 각 영역에 문서 순서대로 flat 정수 eid를 data-eid로 부여한다.
+#     (a) 표 밖 문단 = <p data-eid="N">
+#     (b) 표 셀     = <td data-eid="N" ...>
+#     표 자체/행(<table>/<tr>)에는 eid를 부여하지 않는다.
+#   - eid는 0부터 문단·셀을 통틀어 하나의 카운터로 증가한다.
+#   - 부여 순서는 _extract_file_blocks(=_extract_section_blocks / _extract_hwpx_blocks)
+#     순회 순서와 100% 동일해야 한다(저장 시 같은 순서로 eid를 재부여하기 때문).
+#
+# 직렬화는 표 구조가 HWP(flat cells)와 HWPX(rows[][])로 달라 두 경로를 둔다.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class _EidCounter:
+    """문서 순서대로 0부터 증가하는 eid 카운터(문단·셀 공용)."""
+
+    def __init__(self) -> None:
+        self.value = 0
+
+    def next(self) -> int:
+        v = self.value
+        self.value += 1
+        return v
+
+
+def _eid_extra_attrs(item: dict) -> str:
+    """편집/비교 공용 부가 속성 문자열을 만든다.
+
+    - changed=True 면 class="hwp-changed" (비교 강조 유지).
+    - "_orig" 키가 있으면 data-orig="<escape된 원본 텍스트>" (셀별 되돌리기용).
+      compare(editable) 경로에서만 변경 영역에 한해 세팅된다.
+    """
+    parts = ""
+    if item.get("changed"):
+        parts += f' class="{_CHANGED_CLASS}"'
+    if "_orig" in item:
+        parts += f' data-orig="{_esc(item["_orig"])}"'
+    return parts
+
+
+def _serialize_block_editable(block: dict, counter: "_EidCounter") -> str:
+    """HWP(flat cells) 블록을 data-eid 포함 HTML 조각으로 직렬화한다.
+
+    _serialize_block / _render_table_html 와 동일한 그리드/폴백 규칙을 따르되,
+    표 셀(<td>)과 표 밖 문단(<p>)에 문서 순서대로 eid를 부여한다.
+    eid 부여 순서 = cells 리스트 순서(=PARA_TEXT 흡수 순서)와 동일.
+
+    block/cell 에 비교 메타(changed / html / _orig)가 있으면 반영한다(compare 모드).
+    """
+    if block["type"] == "table":
+        return _render_table_html_editable(
+            block["n_rows"], block["n_cols"], block["cells"], counter
+        )
+    eid = counter.next()
+    extra = _eid_extra_attrs(block)
+    # 변경된 문단은 단어 단위 diff 결과(block["html"])를 본문으로 사용.
+    inner = block.get("html")
+    if inner is None:
+        inner = _esc(block["text"])
+    return f'<p data-eid="{eid}"{extra}>{inner}</p>'
+
+
+def _render_table_html_editable(
+    n_rows: int, n_cols: int, cells: list[dict], counter: "_EidCounter"
+) -> str:
+    """HWP 표(flat cells)를 data-eid 포함 <table>로 렌더한다.
+
+    중요: eid는 *cells 리스트 순서대로* 부여해야 한다(grid 렌더 순서가 아니라).
+    cells 순서는 LIST_HEADER 등장 순서 == apply_block_edits 의 PARA_TEXT 순회
+    순서와 일치하므로, 먼저 각 셀에 eid를 매겨두고 grid 위치에 배치한다.
+
+    셀에 비교 메타(changed / _orig)가 있으면 class/data-orig 로 반영한다(compare 모드).
+    """
+    # cells 순서대로 eid 부여(문서 순서 보장).
+    for c in cells:
+        c["_eid"] = counter.next()
+
+    def _td(cell: dict, attrs: str) -> str:
+        extra = _eid_extra_attrs(cell)
+        return f'<td data-eid="{cell["_eid"]}"{extra}{attrs}>{_esc(cell["text"])}</td>'
+
+    grid_ok = (
+        n_rows > 0
+        and n_cols > 0
+        and bool(cells)
+        and all(
+            0 <= c["row"] < n_rows
+            and 0 <= c["col"] < n_cols
+            and c["cspan"] >= 1
+            and c["rspan"] >= 1
+            and c["row"] + c["rspan"] <= n_rows
+            and c["col"] + c["cspan"] <= n_cols
+            for c in cells
+        )
+    )
+
+    if grid_ok:
+        cell_at: dict[tuple[int, int], dict] = {
+            (c["row"], c["col"]): c for c in cells
+        }
+        rows_html: list[str] = []
+        for r in range(n_rows):
+            tds: list[str] = []
+            c_idx = 0
+            while c_idx < n_cols:
+                cell = cell_at.get((r, c_idx))
+                if cell is not None:
+                    attrs = ""
+                    if cell["cspan"] > 1:
+                        attrs += f' colspan="{cell["cspan"]}"'
+                    if cell["rspan"] > 1:
+                        attrs += f' rowspan="{cell["rspan"]}"'
+                    tds.append(_td(cell, attrs))
+                    c_idx += cell["cspan"]
+                else:
+                    c_idx += 1
+            if tds:
+                rows_html.append("<tr>" + "".join(tds) + "</tr>")
+        return f"<table {_TABLE_STYLE}>{''.join(rows_html)}</table>"
+
+    # 폴백: nCols 단순분할 (등장 순서대로 셀을 행으로 묶음)
+    rows_html = []
+    col_count = n_cols if n_cols > 0 else 1
+    for r_start in range(0, len(cells), col_count):
+        row = cells[r_start : r_start + col_count]
+        tds = "".join(_td(c, "") for c in row)
+        rows_html.append("<tr>" + tds + "</tr>")
+    comment = "<!-- table fallback: merge-cell parse uncertain, simple nCols split -->"
+    return f"{comment}<table {_TABLE_STYLE}>{''.join(rows_html)}</table>"
+
+
+def _serialize_hwpx_block_editable(block: dict, counter: "_EidCounter") -> str:
+    """HWPX(rows[][]) 블록을 data-eid 포함 HTML 조각으로 직렬화한다.
+
+    표는 행 그리드 순서(tr→tc 순서)대로 셀에 eid를 부여한다 — 이 순서는
+    _extract_hwpx_blocks 의 rows 순서, 즉 apply_block_edits 의 셀 순회 순서와 동일.
+    """
+    if block["type"] == "table":
+        rows_html: list[str] = []
+        for row in block["rows"]:
+            tds: list[str] = []
+            for cell in row:
+                eid = counter.next()
+                attrs = ""
+                if cell.get("colspan", 1) > 1:
+                    attrs += f' colspan="{cell["colspan"]}"'
+                if cell.get("rowspan", 1) > 1:
+                    attrs += f' rowspan="{cell["rowspan"]}"'
+                extra = _eid_extra_attrs(cell)
+                tds.append(
+                    f'<td data-eid="{eid}"{extra}{attrs}>{_esc(cell["text"])}</td>'
+                )
+            if tds:
+                rows_html.append("<tr>" + "".join(tds) + "</tr>")
+        return f"<table {_TABLE_STYLE}>{''.join(rows_html)}</table>"
+    eid = counter.next()
+    extra = _eid_extra_attrs(block)
+    inner = block.get("html")
+    if inner is None:
+        inner = _esc(block["text"])
+    return f'<p data-eid="{eid}"{extra}>{inner}</p>'
+
+
+def _render_editable_html(file_data: bytes, file_type: str) -> str:
+    """data-eid가 부여된 편집용 HTML을 반환한다.
+
+    eid는 _extract_file_blocks 순회 순서대로 0..N-1로 부여된다. 이 순서는
+    apply_block_edits 의 순회 순서와 동일하게 유지되어야 한다.
+    """
+    blocks = _extract_file_blocks(file_data, file_type)
+    counter = _EidCounter()
+    if file_type == "hwp":
+        return "\n".join(_serialize_block_editable(b, counter) for b in blocks)
+    return "\n".join(_serialize_hwpx_block_editable(b, counter) for b in blocks)
+
+
+def render_hwp_to_html(file_data: bytes, file_type: str, editable: bool = False) -> str:
     """HWP 바이너리/HWPX를 표 보존 HTML 조각으로 렌더한다.
 
     본문 흐름 그대로 문단(<p>)과 표(<table>)가 등장 순서로 섞인 HTML을 반환한다.
@@ -1462,12 +1727,17 @@ def render_hwp_to_html(file_data: bytes, file_type: str) -> str:
     Args:
         file_data: 파일 바이트.
         file_type: "hwp"(OLE2 바이너리) 또는 "hwpx"(ZIP+XML).
+        editable: True면 편집 영역(표 밖 <p>, 표 셀 <td>)에 data-eid를 부여한다.
+            eid는 0부터 문서 순서대로 증가하며, apply_block_edits 순회 순서와 동일.
 
     Returns:
         <p>/<table> 혼합 HTML 문자열 (escape 처리 완료).
     """
     if not file_data:
         raise HwpParseError("빈 파일 데이터입니다.")
+
+    if editable:
+        return _render_editable_html(file_data, file_type)
 
     if file_type == "hwp":
         sections = _decompress_sections(file_data)
@@ -1478,6 +1748,378 @@ def render_hwp_to_html(file_data: bytes, file_type: str) -> str:
         return "\n".join(all_blocks)
 
     return _render_hwpx_to_html(file_data)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 편집 적용 (apply_block_edits) — eid 기반 위치 텍스트 교체
+#
+# 편집 렌더(_render_editable_html)와 100% 동일한 순서로 문서를 재순회하며 같은
+# eid를 재부여한다. edits에 있는 eid의 새 text가 현재 텍스트와 다르면 그 영역의
+# 텍스트만 위치 기반으로 교체한다(전역 search/replace 금지 → 중복 오염 방지).
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _hwp_section_edit_areas(records: list[tuple[int, int, bytes]]) -> list[dict]:
+    """단일 HWP 섹션의 '편집 영역'을 eid 순서대로 추출한다.
+
+    _extract_section_blocks 의 블록 순회와 100% 동일한 순서/규칙을 따른다:
+      - 표: TABLE 이후 LIST_HEADER(셀 경계)마다 셀 하나가 eid를 받는다(빈 셀 포함).
+        각 셀의 PARA_TEXT(더 깊은 level) 레코드 인덱스를 모은다.
+      - 표 밖 문단: PARA_TEXT 의 stripped 텍스트가 비어있지 않을 때만 eid를 받는다.
+        (편집 렌더가 빈 문단을 블록으로 내보내지 않으므로 동일하게 건너뜀.)
+
+    반환: 영역 dict 리스트. 각 항목:
+      {"kind": "cell"|"para", "para_text_indices": [records 인덱스, ...]}
+    리스트 순서 = eid 순서.
+    """
+    areas: list[dict] = []
+    n = len(records)
+    i = 0
+    while i < n:
+        tag_id, level, payload = records[i]
+
+        if tag_id == _TAG_TABLE:
+            table_level = level
+            cur: dict | None = None
+            j = i + 1
+            while j < n:
+                t_id, t_lv, t_pl = records[j]
+                if t_lv < table_level:
+                    break
+                if t_id == _TAG_TABLE and t_lv == table_level:
+                    break
+                if t_id == _TAG_LIST_HEADER and t_lv == table_level:
+                    cur = {"kind": "cell", "para_text_indices": []}
+                    areas.append(cur)
+                elif t_id == _TAG_PARA_TEXT and t_lv > table_level and cur is not None:
+                    cur["para_text_indices"].append(j)
+                j += 1
+            i = j
+            continue
+
+        if tag_id == _TAG_PARA_TEXT:
+            para = HwpService._parse_hwp_para_text(payload).strip()
+            if para:
+                areas.append({"kind": "para", "para_text_indices": [i]})
+
+        i += 1
+
+    return areas
+
+
+def _apply_block_edits_hwp(
+    file_data: bytes, edits_by_eid: dict[int, str]
+) -> tuple[bytes, int]:
+    """HWP 바이너리에 eid 기반 영역 텍스트 교체를 적용한다.
+
+    각 섹션을 _extract_section_blocks 와 동일 순서로 순회하며 전역 eid를 부여한다.
+    edit 대상 영역은 그 영역의 첫 PARA_TEXT 에 새 text 전체를, 나머지 PARA_TEXT 에는
+    빈 텍스트를 넣는다. 길이 변화는 기존 _replace_text_in_hwp_bytes 와 동일하게
+    PARA_HEADER nChars / CHAR_SHAPE / LINE_SEG 위치 보정 + _build_section_stream 정확
+    크기 재인코딩으로 흡수한다.
+    """
+    TAG_PARA_HEADER = 66
+    TAG_PARA_TEXT = 67
+    TAG_PARA_CHAR_SHAPE = 68
+    TAG_PARA_LINE_SEG = 69
+
+    changed_count = 0
+    buf = io.BytesIO(bytearray(file_data))
+    try:
+        ole = olefile.OleFileIO(buf, write_mode=True)
+    except Exception as e:
+        raise HwpParseError(f"HWP 파일 열기 실패: {e}")
+
+    try:
+        compressed = HwpService._is_hwp_compressed(file_data)
+        section_streams = sorted(
+            "/".join(entry)
+            for entry in ole.listdir()
+            if len(entry) == 2
+            and entry[0] == "BodyText"
+            and entry[1].startswith("Section")
+        )
+
+        eid = 0  # 전역 eid 카운터(모든 섹션을 통틀어 증가)
+        for stream_path in section_streams:
+            raw = ole.openstream(stream_path).read()
+            trailer = b""
+            if compressed:
+                try:
+                    data, trailer = HwpService._decode_section_stream(raw)
+                except zlib.error as e:
+                    raise HwpParseError(f"HWP 섹션 압축 해제 실패: {e}")
+            else:
+                data = raw
+
+            records = list(_iter_records(data))
+            areas = _hwp_section_edit_areas(records)
+
+            # 이 섹션에서 실제 바꿀 (record_index -> new_text) 매핑을 만든다.
+            #   영역의 첫 PARA_TEXT = 새 text 전체, 나머지 = "".
+            # eid 가 edits 에 없거나 텍스트가 같으면 건드리지 않는다.
+            new_text_by_record: dict[int, str] = {}
+            for area in areas:
+                cur_eid = eid
+                eid += 1
+                if cur_eid not in edits_by_eid:
+                    continue
+                indices = area["para_text_indices"]
+                if not indices:
+                    continue
+                new_text = edits_by_eid[cur_eid]
+                # 현재 영역 텍스트(여러 PARA_TEXT면 " "로 합쳐 보였던 값) 계산
+                parts = [
+                    HwpService._parse_hwp_para_text(records[k][2]).strip()
+                    for k in indices
+                ]
+                current_text = " ".join(p for p in parts if p)
+                if current_text == new_text:
+                    continue
+                new_text_by_record[indices[0]] = new_text
+                for k in indices[1:]:
+                    new_text_by_record[k] = ""
+
+            if not new_text_by_record:
+                continue
+
+            # 레코드를 그룹(문단) 단위로 패칭. _replace_text_in_hwp_bytes 미러.
+            new_records: list[list] = [[t, l, p] for (t, l, p) in records]
+            header_idx = -1
+            group_edit_pos = -1
+            group_delta = 0
+            group_text_base = 0
+            section_changed = 0
+            for r_idx in range(len(new_records)):
+                r_tag, r_lv, r_payload = new_records[r_idx]
+
+                if r_tag == TAG_PARA_HEADER:
+                    header_idx = r_idx
+                    group_edit_pos = -1
+                    group_delta = 0
+                    group_text_base = 0
+                elif r_tag == TAG_PARA_TEXT and len(r_payload) >= 2:
+                    if r_idx in new_text_by_record:
+                        new_payload, delta, edit_pos = HwpService._set_hwp_para_text(
+                            r_payload, new_text_by_record[r_idx]
+                        )
+                        new_records[r_idx][2] = new_payload
+                        if delta != 0 or new_payload != r_payload:
+                            section_changed += 1
+                        if delta != 0:
+                            global_edit = group_text_base + edit_pos
+                            if group_edit_pos == -1 or global_edit < group_edit_pos:
+                                group_edit_pos = global_edit
+                            group_delta += delta
+                            if header_idx >= 0:
+                                h_payload = new_records[header_idx][2]
+                                new_records[header_idx][2] = (
+                                    HwpService._patch_para_header_nchars(h_payload, delta)
+                                )
+                    group_text_base += HwpService._count_para_text_positions(r_payload)
+                elif r_tag == TAG_PARA_CHAR_SHAPE and group_delta != 0:
+                    new_records[r_idx][2] = HwpService._patch_char_shape_positions(
+                        r_payload, group_edit_pos, group_delta
+                    )
+                elif r_tag == TAG_PARA_LINE_SEG and group_delta != 0:
+                    new_records[r_idx][2] = HwpService._patch_line_seg_positions(
+                        r_payload, group_edit_pos, group_delta
+                    )
+
+            if section_changed == 0:
+                continue
+            changed_count += section_changed
+
+            # 섹션 바이너리 재조립
+            parts_bin: list[bytes] = []
+            for t_id, t_lv, t_pl in new_records:
+                parts_bin.append(HwpService._build_record_header(t_id, t_lv, len(t_pl)))
+                parts_bin.append(t_pl)
+            new_data = b"".join(parts_bin)
+
+            original_size = len(raw)
+            if compressed:
+                if len(trailer) == 8:
+                    new_trailer = struct.pack(
+                        "<II", zlib.crc32(new_data) & 0xFFFFFFFF, len(new_data)
+                    )
+                else:
+                    new_trailer = trailer
+                new_raw = HwpService._build_section_stream(
+                    new_data, original_size, new_trailer
+                )
+                if new_raw is None:
+                    raise HwpParseError(
+                        "교체 텍스트가 너무 길어 원본 HWP 파일에 저장할 수 없습니다. "
+                        "교체 텍스트를 줄이거나 HWPX 형식을 사용해 주세요."
+                    )
+            else:
+                new_raw = new_data
+
+            ole.write_stream(stream_path, new_raw)
+    except HwpParseError:
+        raise
+    except Exception as e:
+        raise HwpParseError(f"HWP 파일 수정 실패: {e}")
+    finally:
+        ole.close()
+
+    return buf.getvalue(), changed_count
+
+
+def _apply_block_edits_hwpx(
+    file_data: bytes, edits_by_eid: dict[int, str]
+) -> tuple[bytes, int]:
+    """HWPX 에 eid 기반 영역 텍스트 교체를 적용한다.
+
+    _extract_hwpx_blocks 와 동일 순서로 편집 영역(=<t> 묶음)을 수집해 eid 를 부여한다:
+      - 표가 있는 문서: <tbl> 의 tr→tc 순서대로 각 셀의 <t> 묶음.
+      - 표가 없는 문서: 모든 섹션의 비어있지 않은 <t> 각각이 하나의 영역.
+    edit 대상 영역은 첫 <t> 에 새 전체 텍스트, 나머지 <t> 는 빈 문자열로 바꾼 뒤
+    save_file 처럼 zip 을 재작성한다.
+    """
+    svc = HwpService()
+    svc._validate_zip_data(file_data)
+
+    changed_count = 0
+    buf_in = io.BytesIO(file_data)
+    buf_out = io.BytesIO()
+
+    eid = 0  # 전역 eid 카운터
+    try:
+        with zipfile.ZipFile(buf_in, "r") as zf_in:
+            section_files = svc._get_section_files(zf_in)
+            section_set = set(section_files)
+
+            # 표 유무 판정: _extract_hwpx_blocks 와 동일하게 어느 섹션에든 행이 있는
+            # tbl 이 하나라도 있으면 "표 있음" 경로.
+            has_table = False
+            for sf in section_files:
+                root = SafeET.fromstring(zf_in.read(sf))
+                for el in root.iter():
+                    if _get_local_name(el.tag) != "tbl":
+                        continue
+                    for tr in el:
+                        if _get_local_name(tr.tag) == "tr":
+                            for tc in tr:
+                                if _get_local_name(tc.tag) == "tc":
+                                    has_table = True
+                                    break
+                        if has_table:
+                            break
+                    if has_table:
+                        break
+                if has_table:
+                    break
+
+            with zipfile.ZipFile(buf_out, "w", zipfile.ZIP_DEFLATED) as zf_out:
+                for item in zf_in.infolist():
+                    raw = zf_in.read(item.filename)
+                    if item.filename in section_set:
+                        root = SafeET.fromstring(raw)
+                        areas = _hwpx_section_edit_areas(root, has_table)
+                        for t_elements in areas:
+                            cur_eid = eid
+                            eid += 1
+                            if cur_eid not in edits_by_eid or not t_elements:
+                                continue
+                            new_text = edits_by_eid[cur_eid]
+                            current_text = "".join(t.text or "" for t in t_elements)
+                            # 셀의 경우 렌더 텍스트는 strip 되지만, 저장 시에는
+                            # 사용자가 보낸 new_text 를 그대로 첫 <t> 에 넣는다.
+                            if current_text == new_text:
+                                continue
+                            t_elements[0].text = new_text
+                            for t in t_elements[1:]:
+                                t.text = ""
+                            changed_count += 1
+                        raw = ET.tostring(
+                            root, encoding="unicode", xml_declaration=True
+                        ).encode("utf-8")
+                    zf_out.writestr(item, raw)
+    except (zipfile.BadZipFile, ET.ParseError) as e:
+        raise HwpParseError(f"HWPX 파일 수정 실패: {e}")
+
+    return buf_out.getvalue(), changed_count
+
+
+def _hwpx_section_edit_areas(
+    root: ET.Element, has_table: bool
+) -> list[list[ET.Element]]:
+    """단일 HWPX 섹션의 편집 영역(<t> 요소 묶음)을 eid 순서대로 반환한다.
+
+    _extract_hwpx_blocks 와 동일 순서:
+      - has_table=True: root.iter() 로 tbl 을 찾고, tr→tc 순서대로 각 tc 의 <t> 묶음.
+        (행이 하나도 없는 tbl 은 건너뜀 — 블록을 안 만들기 때문.)
+      - has_table=False: 모든 <t> 중 text 가 있는 것 각각이 하나의 영역(1개 <t>).
+    """
+    areas: list[list[ET.Element]] = []
+    if has_table:
+        for el in root.iter():
+            if _get_local_name(el.tag) != "tbl":
+                continue
+            row_found = False
+            tbl_areas: list[list[ET.Element]] = []
+            for tr in el:
+                if _get_local_name(tr.tag) != "tr":
+                    continue
+                has_cell = False
+                for tc in tr:
+                    if _get_local_name(tc.tag) != "tc":
+                        continue
+                    has_cell = True
+                    t_els = [
+                        t for t in tc.iter()
+                        if _get_local_name(t.tag) == "t"
+                    ]
+                    tbl_areas.append(t_els)
+                if has_cell:
+                    row_found = True
+            # _extract_hwpx_blocks 는 행이 있는 tbl 만 블록으로 만든다.
+            if row_found:
+                areas.extend(tbl_areas)
+    else:
+        for el in root.iter():
+            if _get_local_name(el.tag) == "t" and el.text:
+                areas.append([el])
+    return areas
+
+
+def apply_block_edits(
+    file_data: bytes, file_type: str, edits: list[dict]
+) -> tuple[bytes, int]:
+    """eid 기반 영역 텍스트 편집을 원본 파일에 무손실로 반영한다.
+
+    Args:
+        file_data: 원본 HWP/HWPX 바이트.
+        file_type: "hwp" 또는 "hwpx".
+        edits: [{"eid": int, "text": str}, ...]. eid 는 render_hwp_to_html(editable=True)
+            가 부여한 data-eid 와 동일한 순서/번호.
+
+    Returns:
+        (new_bytes, changed_count). changed_count 는 실제로 텍스트가 바뀐 영역 수.
+
+    표 구조·서식은 절대 변경하지 않고, 지정된 eid 영역의 텍스트만 교체한다.
+    중복 텍스트 오염을 막기 위해 전역 search/replace 가 아닌 위치 기반으로만 수정한다.
+    """
+    if not file_data:
+        raise HwpParseError("빈 파일 데이터입니다.")
+
+    edits_by_eid: dict[int, str] = {}
+    for e in edits:
+        try:
+            eid = int(e["eid"])
+            text = e["text"]
+        except (KeyError, TypeError, ValueError) as exc:
+            raise HwpParseError(f"잘못된 edit 항목입니다: {exc}")
+        if text is None:
+            text = ""
+        edits_by_eid[eid] = str(text)
+
+    if file_type == "hwp":
+        HwpService()._validate_ole_data(file_data)
+        return _apply_block_edits_hwp(file_data, edits_by_eid)
+    return _apply_block_edits_hwpx(file_data, edits_by_eid)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1585,8 +2227,39 @@ def _mark_hwpx_table_changes(orig: dict, mod: dict) -> None:
                 mc["changed"] = True
 
 
+def _set_orig_hwp_table(orig: dict, mod: dict) -> None:
+    """변경된 HWP 표 셀에 원본 텍스트를 _orig 로 부여한다(되돌리기용).
+
+    셀 목록 길이가 다르면(구조 불일치) 부여하지 않는다(안전 폴백).
+    """
+    o_cells = orig["cells"]
+    m_cells = mod["cells"]
+    if len(o_cells) != len(m_cells):
+        return
+    for oc, mc in zip(o_cells, m_cells):
+        if mc.get("changed") and oc["text"] != mc["text"]:
+            mc["_orig"] = oc["text"]
+
+
+def _set_orig_hwpx_table(orig: dict, mod: dict) -> None:
+    """변경된 HWPX 표 셀에 원본 텍스트를 _orig 로 부여한다(되돌리기용)."""
+    o_rows = orig["rows"]
+    m_rows = mod["rows"]
+    if len(o_rows) != len(m_rows):
+        return
+    for o_row, m_row in zip(o_rows, m_rows):
+        if len(o_row) != len(m_row):
+            continue
+        for oc, mc in zip(o_row, m_row):
+            if mc.get("changed") and oc["text"] != mc["text"]:
+                mc["_orig"] = oc["text"]
+
+
 def render_hwp_compare_html(
-    original_data: bytes, modified_data: bytes, file_type: str
+    original_data: bytes,
+    modified_data: bytes,
+    file_type: str,
+    editable: bool = False,
 ) -> dict:
     """원본·수정본을 셀/단어 단위로 비교해 바뀐 부분을 강조한 HTML 쌍을 만든다.
 
@@ -1597,10 +2270,26 @@ def render_hwp_compare_html(
     구조가 어긋나면(블록 종류/개수/표 구조 불일치) 해당 블록은 클래스 없이
     그대로 출력(안전 폴백). 클래스명은 양쪽 모두 'hwp-changed'로 통일.
 
+    editable=True 일 때 modified_html 에 편집 좌표/되돌리기 정보를 부여한다:
+      - 각 편집 영역(표 밖 <p>, 표 셀 <td>)에 data-eid 부여. 그 순서·규칙은
+        modified_data 단독 _render_editable_html(=apply_block_edits) 과 100% 동일
+        → 프론트가 편집분을 save-blocks(eid 기반)로 그대로 저장 가능.
+      - 변경된 영역에 한해 data-orig="<원본 텍스트>"(escape) 부여(셀별 되돌리기용).
+        원본 텍스트는 정렬된 orig_blocks 의 같은 인덱스 영역에서 가져온다.
+      - hwp-changed 색강조와 단어 단위 diff(<span>)는 그대로 유지.
+      - 블록 구조 불일치(폴백) 시: data-orig 생략, 색강조 없음, eid 는 부여(편집 가능).
+
+    editable=True 일 때 original_html 에도 **동일한 editable 직렬화기 + 새 카운터**
+    로 data-eid 를 부여한다(modified 와 1:1 정렬). 단 원본 블록엔 _orig 메타를
+    세팅하지 않으므로 data-orig 는 붙지 않고 contenteditable 도 없다 → 오직 data-eid.
+    이로써 "수정본 셀 클릭 → 원본 같은 셀(같은 eid) 강조"가 가능하다.
+    editable=False 면 original 은 기존대로 일반 직렬화(eid 없음).
+
     Args:
         original_data: 원본 파일 바이트.
         modified_data: 수정본 파일 바이트.
         file_type: "hwp" 또는 "hwpx".
+        editable: True면 modified_html 에 data-eid/data-orig 를 부여.
     """
     if not original_data or not modified_data:
         raise HwpParseError("빈 파일 데이터입니다.")
@@ -1610,11 +2299,39 @@ def render_hwp_compare_html(
 
     serialize = _serialize_block if file_type == "hwp" else _serialize_hwpx_block
 
+    def _serialize_modified(blocks: list[dict]) -> str:
+        """modified 측 직렬화. editable 이면 eid/data-orig 부여 경로 사용."""
+        if not editable:
+            return "\n".join(serialize(b) for b in blocks)
+        counter = _EidCounter()
+        ser = _serialize_block_editable if file_type == "hwp" else _serialize_hwpx_block_editable
+        return "\n".join(ser(b, counter) for b in blocks)
+
+    def _serialize_original(blocks: list[dict]) -> str:
+        """original 측 직렬화.
+
+        editable 이면 modified 와 *동일한* editable 직렬화기 + 새 카운터(0부터)로
+        직렬화한다. 원본/수정본은 같은 문서 구조(블록·셀 개수 동일)이므로 eid가
+        1:1로 정렬되어 "수정본 셀 클릭 → 원본 같은 셀 강조"가 가능하다.
+
+        원본 블록에는 _orig 메타를 세팅하지 않으므로 data-orig 는 붙지 않고,
+        contenteditable 도 직렬화기가 부여하지 않는다 → data-eid 만 부여된다.
+        hwp-changed 색강조(원본 삭제/이전 토큰 빨강)는 changed/html 메타로 유지된다.
+        editable=False 면 기존처럼 일반 직렬화(eid 없음).
+        """
+        if not editable:
+            return "\n".join(serialize(b) for b in blocks)
+        counter = _EidCounter()
+        ser = _serialize_block_editable if file_type == "hwp" else _serialize_hwpx_block_editable
+        return "\n".join(ser(b, counter) for b in blocks)
+
     # 블록 개수가 다르면 비교를 포기하고 각자 그대로 렌더(안전 폴백).
+    # editable 이어도 modified 는 eid 부여(편집 가능)하되 data-orig/색강조는 없음.
+    # 폴백에서도 editable 이면 원본을 editable 직렬화기로(eid 정렬 위해) 처리한다.
     if len(orig_blocks) != len(mod_blocks):
         return {
-            "original_html": "\n".join(serialize(b) for b in orig_blocks),
-            "modified_html": "\n".join(serialize(b) for b in mod_blocks),
+            "original_html": _serialize_original(orig_blocks),
+            "modified_html": _serialize_modified(mod_blocks),
         }
 
     for orig, mod in zip(orig_blocks, mod_blocks):
@@ -1626,13 +2343,21 @@ def render_hwp_compare_html(
                 o_html, m_html = _word_diff_html(orig["text"], mod["text"])
                 orig["html"] = o_html
                 mod["html"] = m_html
+                if editable:
+                    # 변경된 문단은 단어 강조를 유지하되 changed 플래그로
+                    # data-* 부여 트리거(여기선 _orig 만 사용). 색강조는 span 으로 이미 처리됨.
+                    mod["_orig"] = orig["text"]
         elif orig["type"] == "table":
             if file_type == "hwp":
                 _mark_hwp_table_changes(orig, mod)
+                if editable:
+                    _set_orig_hwp_table(orig, mod)
             else:
                 _mark_hwpx_table_changes(orig, mod)
+                if editable:
+                    _set_orig_hwpx_table(orig, mod)
 
     return {
-        "original_html": "\n".join(serialize(b) for b in orig_blocks),
-        "modified_html": "\n".join(serialize(b) for b in mod_blocks),
+        "original_html": _serialize_original(orig_blocks),
+        "modified_html": _serialize_modified(mod_blocks),
     }

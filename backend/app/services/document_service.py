@@ -204,11 +204,23 @@ async def replace_in_document(
         raise DocumentServiceError("파일 데이터가 없습니다.")
 
     ft = document.file_type.value
-    old_text = await hwp_service.get_text_content(document.file_data, ft)
-    tables = await hwp_service.extract_tables(document.file_data, ft)
+
+    # 대비표 적용은 '항상 원본(v1) 기준'으로 한다. document.file_data(=최신 상태)
+    # 를 기준으로 하면 엑셀을 여러 번 적용할 때 변경이 누적되어 사용자에게 혼란을
+    # 준다. v1을 base로 삼으면 create_version 이 latest=「v1+이 엑셀」을 만들고,
+    # get_diff(v1 vs latest) 는 항상 '이 엑셀 적용분'만 보여준다(누적 제거).
+    original_version = await get_version_by_number(db, document.id, 1)
+    base_data = (
+        original_version.file_data
+        if (original_version and original_version.file_data)
+        else document.file_data
+    )
+
+    old_text = await hwp_service.get_text_content(base_data, ft)
+    tables = await hwp_service.extract_tables(base_data, ft)
     mapped = map_excel_to_tables(replacements, tables)
 
-    current_data = document.file_data
+    current_data = base_data
     total_count = 0
 
     for r in replacements:
@@ -232,7 +244,7 @@ async def replace_in_document(
         diff_records = build_replacement_diff(replacements, old_text, new_content)
         applied_count = sum(1 for d in diff_records if d["applied"])
         summary = (
-            f"일괄 교체: {len(replacements)}건 요청, "
+            f"일괄 교체(원본 기준 적용): {len(replacements)}건 요청, "
             f"{applied_count}건 매칭, {total_count}건 수정"
         )
         # 대비표 적용을 즉시 본문(document.content_text/file_data)에 반영한다.
@@ -242,6 +254,28 @@ async def replace_in_document(
         return total_count, version.version_number
 
     return 0, 0
+
+
+async def reset_to_original(db: AsyncSession, document: Document) -> Document:
+    """문서를 원본(v1) 상태로 초기화한다.
+
+    v1 의 file_data/content_text 로 새 버전을 생성해 latest 로 만든다.
+    이렇게 하면 document.file_data/content_text 가 v1 내용으로 갱신되고,
+    get_diff(v1 vs latest=v1내용) 는 '변경 없음'이 된다(누적·손편집 전부 해제).
+    """
+    original_version = await get_version_by_number(db, document.id, 1)
+    if not original_version or not original_version.file_data:
+        raise DocumentServiceError("원본 버전을 찾을 수 없습니다.")
+
+    await create_version(
+        db,
+        document,
+        original_version.file_data,
+        original_version.content_text,
+        "원본으로 초기화",
+    )
+    await db.refresh(document)
+    return document
 
 
 # ── Search / Replace (delegates to search_service) ──
@@ -373,6 +407,54 @@ async def save_document_content(
         return document
 
     raise DocumentServiceError("현재 HWP/HWPX 파일만 저장을 지원합니다.")
+
+
+# ── Save block edits (구조 보존 인라인 편집) ──
+
+
+async def save_document_blocks(
+    db: AsyncSession,
+    document: Document,
+    edits: list[dict],
+) -> Document:
+    """data-eid 기반 영역 텍스트 편집을 HWP/HWPX 파일에 무손실 반영하고 저장한다.
+
+    save_document_content 를 미러링한다:
+      - 최신 버전(대비표 적용분 포함)을 기준으로 손편집을 누적한다.
+      - hwp_service.apply_block_edits 로 새 file_data 를 만든다(표 구조·서식 불변).
+      - content_text 를 평문으로 재추출하고 새 DocumentVersion 을 생성한다.
+
+    edits: [{"eid": int, "text": str}, ...]
+    """
+    from app.services.hwp_service import apply_block_edits
+
+    if document.file_type not in (FileType.HWPX, FileType.HWP):
+        raise DocumentServiceError("현재 HWP/HWPX 파일만 저장을 지원합니다.")
+
+    if not document.file_data:
+        raise DocumentServiceError("파일 데이터가 없습니다.")
+
+    ft = document.file_type.value
+
+    # 최신 버전(대비표 적용분 포함)을 기준으로 손편집을 그 위에 누적한다.
+    latest = await get_latest_version(db, document.id)
+    base_data = latest.file_data if latest and latest.file_data else document.file_data
+    base_data = bytes(base_data)
+
+    try:
+        new_data, changed = apply_block_edits(base_data, ft, edits)
+    except HwpParseError as e:
+        raise DocumentServiceError(str(e))
+
+    try:
+        new_content = await hwp_service.get_text_content(new_data, ft)
+    except (HwpParseError, HwpConversionError):
+        new_content = document.content_text
+
+    summary = f"인라인 편집: {changed}개 영역 수정"
+    await create_version(db, document, new_data, new_content, summary)
+    await db.refresh(document)
+    return document
 
 
 # ── Delete ──

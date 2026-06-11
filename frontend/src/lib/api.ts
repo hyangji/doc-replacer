@@ -100,6 +100,12 @@ export async function saveDocument(id: number, content: string): Promise<Documen
   return data;
 }
 
+// 원본(v1) 내용으로 새 버전 생성 → 적용·편집 모두 초기화
+export async function resetDocument(id: number): Promise<DocumentDetail> {
+  const { data } = await api.post<DocumentDetail>(`/documents/${id}/reset`);
+  return data;
+}
+
 export async function convertDocument(id: number, format: 'docx' | 'pdf'): Promise<Blob> {
   const { data } = await api.post<ConvertResponse>(`/documents/${id}/convert`, {
     target_format: format,
@@ -137,21 +143,43 @@ export async function downloadDocument(
   return { blob: data as Blob, filename };
 }
 
-export async function getDocumentHtml(id: number, version?: number): Promise<string> {
+export async function getDocumentHtml(
+  id: number,
+  version?: number,
+  editable?: boolean,
+): Promise<string> {
+  const params: Record<string, string | number | boolean> = {};
+  if (version != null) params.version = version;
+  if (editable) params.editable = true;
   const { data } = await api.get<{ html: string }>(`/documents/${id}/html`, {
-    params: version != null ? { version } : undefined,
+    params: Object.keys(params).length > 0 ? params : undefined,
   });
   return data.html;
+}
+
+export async function saveBlocks(
+  id: number,
+  edits: { eid: number; text: string }[],
+): Promise<DocumentDetail> {
+  const { data } = await api.post<DocumentDetail>(`/documents/${id}/save-blocks`, { edits });
+  return data;
 }
 
 export async function getDocumentCompareHtml(
   id: number,
   base: number,
   target?: number,
+  editable?: boolean,
 ): Promise<{ original_html: string; modified_html: string }> {
   const { data } = await api.get<{ original_html: string; modified_html: string }>(
     `/documents/${id}/html/compare`,
-    { params: { base, ...(target != null ? { target } : {}) } },
+    {
+      params: {
+        base,
+        ...(target != null ? { target } : {}),
+        ...(editable ? { editable: true } : {}),
+      },
+    },
   );
   return data;
 }

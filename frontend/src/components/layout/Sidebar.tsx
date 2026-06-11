@@ -2,17 +2,13 @@
 
 import React, { useState } from 'react';
 import { Layout, Menu } from 'antd';
-import {
-  HomeOutlined,
-  FileTextOutlined,
-} from '@ant-design/icons';
+import { FileTextOutlined } from '@ant-design/icons';
 import { useRouter, usePathname } from 'next/navigation';
 
 const { Sider } = Layout;
 
 const menuItems = [
-  { key: '/', icon: <HomeOutlined />, label: '대시보드' },
-  { key: '/documents', icon: <FileTextOutlined />, label: '문서 목록' },
+  { key: '/documents', icon: <FileTextOutlined />, label: '문서 작업' },
 ];
 
 export default function Sidebar() {
@@ -21,7 +17,7 @@ export default function Sidebar() {
   const pathname = usePathname();
 
   const selectedKey =
-    menuItems.find((item) => item.key === pathname)?.key ?? '/';
+    menuItems.find((item) => item.key === pathname)?.key ?? '/documents';
 
   return (
     <Sider

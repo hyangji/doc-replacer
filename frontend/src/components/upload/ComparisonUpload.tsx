@@ -13,6 +13,7 @@ import {
   Divider,
   Tooltip,
   Collapse,
+  Modal,
 } from 'antd';
 import {
   FileExcelOutlined,
@@ -36,6 +37,8 @@ const MAX_SIZE = 50 * 1024 * 1024; // 50MB
 interface ComparisonUploadProps {
   documentId: string;
   onApplyComplete?: () => void;
+  /** 이미 적용/편집 중인 비교 작업이 있는지(있으면 재적용 시 경고) */
+  hasExistingWork?: boolean;
 }
 
 // 중복 제거용 키. 같은 값이라도 항목(field_name)이 다르면 사용자에겐 다른 항목이므로
@@ -64,6 +67,7 @@ interface SheetGroup {
 export default function ComparisonUpload({
   documentId,
   onApplyComplete,
+  hasExistingWork = false,
 }: ComparisonUploadProps) {
   const [previewLoading, setPreviewLoading] = useState(false);
   const [applyLoading, setApplyLoading] = useState(false);
@@ -148,12 +152,31 @@ export default function ComparisonUpload({
     return false; // antd Upload의 자동 업로드 막기
   }
 
-  async function handleApply() {
+  function handleApply() {
     if (selectedKeys.length === 0) {
       message.warning('적용할 항목을 선택하세요.');
       return;
     }
 
+    // 재적용(이미 적용/편집 중인 작업 존재)인 경우에만 경고 모달.
+    // 처음 적용에는 경고 없이 바로 진행.
+    if (hasExistingWork) {
+      Modal.confirm({
+        title: '새 엑셀로 다시 적용할까요?',
+        content:
+          '새 엑셀을 적용하면 원본 기준으로 다시 비교하며, 현재 적용·편집한 내용은 초기화됩니다. 계속할까요?',
+        okText: '예, 새로 적용',
+        cancelText: '아니오',
+        okButtonProps: { danger: true },
+        onOk: () => doApply(),
+      });
+      return;
+    }
+
+    void doApply();
+  }
+
+  async function doApply() {
     const selectedRows = rows.filter((r) => selectedKeys.includes(r.rowKey));
     const replacements: ReplacementItem[] = selectedRows.map((r) => ({
       field_name: r.field_name,
@@ -317,9 +340,12 @@ export default function ComparisonUpload({
   const unmatchedRows = rows.filter((r) => r.match_count === 0).length;
 
   // match_count === 0 인 행은 체크 불가
+  // preserveSelectedRowKeys: 시트별로 표가 여러 개라 한 rowSelection을 공유하는데,
+  // 이 옵션이 없으면 다른 표를 체크할 때 현재 표에 없는 키(=다른 표 선택분)가 유실됨.
   const rowSelection = useMemo(
     () => ({
       selectedRowKeys: selectedKeys,
+      preserveSelectedRowKeys: true,
       onChange: (keys: React.Key[]) => setSelectedKeys(keys),
       getCheckboxProps: (record: RowData) => ({
         disabled: record.match_count === 0,

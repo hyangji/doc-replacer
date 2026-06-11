@@ -2,20 +2,20 @@
 
 import React from 'react';
 import { Layout, Menu, Button } from 'antd';
-import { SettingOutlined, HomeOutlined } from '@ant-design/icons';
+import { SettingOutlined, FileTextOutlined } from '@ant-design/icons';
 import { useRouter, usePathname } from 'next/navigation';
 
 const { Header: AntHeader } = Layout;
 
 const menuItems = [
-  { key: '/', label: '대시보드', icon: <HomeOutlined /> },
+  { key: '/documents', label: '문서 작업', icon: <FileTextOutlined /> },
 ];
 
 export default function Header() {
   const router = useRouter();
   const pathname = usePathname();
 
-  const selectedKey = menuItems.find((item) => item.key === pathname)?.key ?? '/';
+  const selectedKey = menuItems.find((item) => item.key === pathname)?.key ?? '/documents';
 
   return (
     <AntHeader
@@ -36,7 +36,7 @@ export default function Header() {
           cursor: 'pointer',
           whiteSpace: 'nowrap',
         }}
-        onClick={() => router.push('/')}
+        onClick={() => router.push('/documents')}
       >
         DocReplacer
       </div>

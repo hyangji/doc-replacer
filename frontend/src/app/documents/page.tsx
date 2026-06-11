@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useCallback } from 'react';
-import { Typography, Table, Card, Space, Button, Tag, message, Modal } from 'antd';
+import { Typography, Table, Card, Space, Button, Tag, message, Modal, Alert } from 'antd';
 import {
   FileTextOutlined,
   DeleteOutlined,
@@ -40,7 +40,7 @@ export default function DocumentsPage() {
     (file: UploadFile) => {
       const response = file.response as { id?: number } | undefined;
       if (response?.id) {
-        message.success(`${file.name} 업로드 완료`);
+        // 업로드 완료 토스트는 FileUpload 내부에서 이미 표시함(중복 방지) → 여기선 이동만
         router.push(`/editor/${response.id}`);
       } else {
         fetchDocuments();
@@ -111,6 +111,7 @@ export default function DocumentsPage() {
       title: '액션',
       key: 'action',
       width: 150,
+      fixed: 'right',
       render: (_: unknown, record: DocumentListItem) => (
         <Space>
           <Button
@@ -136,21 +137,20 @@ export default function DocumentsPage() {
   ];
 
   if (isLoading && documents.length === 0) {
-    return <LoadingSpinner tip="문서 목록을 불러오는 중..." />;
+    return <LoadingSpinner tip="작업 문서를 불러오는 중..." />;
   }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       <PageHeader
-        title="문서 목록"
+        title="문서 작업"
         breadcrumb={[
-          { title: '홈', href: '/' },
-          { title: '문서 목록' },
+          { title: '문서 작업' },
         ]}
       />
 
       <Space direction="vertical" size="large" style={{ width: '100%' }}>
-        <Card className="dashboard-card">
+        <Card title="원본 문서 업로드" className="dashboard-card">
           <FileUpload
             onUploadComplete={handleUploadComplete}
             acceptTypes={['.hwp', '.hwpx', '.xlsx', '.xls', '.docx', '.doc']}
@@ -163,7 +163,14 @@ export default function DocumentsPage() {
           </Card>
         )}
 
-        <Card title="문서 목록" className="dashboard-card">
+        <Card title="작업 문서" className="dashboard-card">
+          <Alert
+            type="info"
+            showIcon
+            style={{ marginBottom: 12 }}
+            message="업로드한 문서는 다운로드하지 않아도 자동으로 여기에 저장됩니다."
+            description="작업하던 문서를 다시 열어 이어서 수정할 수 있습니다. 더 이상 필요 없는 문서는 오른쪽 [삭제] 버튼으로 정리하세요."
+          />
           <Table<DocumentListItem>
             columns={columns}
             dataSource={documents}
@@ -171,6 +178,7 @@ export default function DocumentsPage() {
             pagination={{ pageSize: 20 }}
             size="middle"
             loading={isLoading}
+            scroll={{ x: 'max-content' }}
           />
         </Card>
       </Space>

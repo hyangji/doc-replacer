@@ -200,6 +200,25 @@ class DocumentCompareHtmlResponse(BaseModel):
     modified_html: str
 
 
+# --- 구조 보존 인라인 편집 (data-eid 기반 영역 텍스트 저장) ---
+
+
+class BlockEdit(BaseModel):
+    """단일 편집 영역의 새 텍스트.
+
+    eid 는 GET /{id}/html?editable=true 응답의 data-eid 값과 동일.
+    """
+
+    eid: int = Field(..., ge=0)
+    text: str
+
+
+class SaveBlocksRequest(BaseModel):
+    """eid 기반 영역 텍스트 일괄 저장 요청."""
+
+    edits: list[BlockEdit] = Field(default_factory=list)
+
+
 # --- Convert ---
 
 

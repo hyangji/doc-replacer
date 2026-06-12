@@ -278,6 +278,10 @@ const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function DiffVi
     typeof CSS.highlights !== 'undefined';
   // 현재 검색 매치들의 Range 목록(좌/우 패널 통합, 순서대로)
   const docMatchRangesRef = useRef<Range[]>([]);
+  // 현재 강조 중인 검색 매치 엘리먼트(한 번에 하나만, 다음 매치로 갈 때 해제)
+  const currentMatchElRef = useRef<HTMLElement | null>(null);
+  // 강조 적용을 다음 프레임으로 미루기 위한 rAF id(리렌더의 innerHTML 재적용 후 적용)
+  const searchRafRef = useRef<number>(0);
 
   // --- 문서 모드: 변경 칸 점프 ---
   const [docChangeCount, setDocChangeCount] = useState(0);
@@ -500,83 +504,93 @@ const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function DiffVi
     [collectTextNodes],
   );
 
-  // 하이라이트 적용(현재 매치 강조 포함)
-  const applyDocHighlights = useCallback(
-    (ranges: Range[], current: number) => {
-      if (!supportsHighlightApi) return;
-      const hl = CSS.highlights;
-      hl.delete('doc-search');
-      hl.delete('doc-search-current');
-      if (ranges.length === 0) return;
-      const others = ranges.filter((_, i) => i !== current);
-      const cur = ranges[current];
-      if (others.length > 0) {
-        hl.set('doc-search', new Highlight(...others));
-      }
-      if (cur) {
-        hl.set('doc-search-current', new Highlight(cur));
-      }
-    },
-    [supportsHighlightApi],
-  );
+  // 현재 강조용으로 감싼 <span.doc-search-hit>을 풀어 DOM을 원상복구한다.
+  // (span은 텍스트만 품으므로 풀면 textContent 불변 → 저장/검색 기준 영향 없음)
+  const unwrapSearchMark = useCallback(() => {
+    const span = currentMatchElRef.current;
+    currentMatchElRef.current = null;
+    if (!span || !span.parentNode) return;
+    const parent = span.parentNode;
+    while (span.firstChild) parent.insertBefore(span.firstChild, span);
+    parent.removeChild(span);
+    parent.normalize(); // 쪼개졌던 텍스트 노드 병합
+  }, []);
 
-  const clearDocHighlights = useCallback(() => {
-    if (!supportsHighlightApi) return;
-    const hl = CSS.highlights;
-    hl.delete('doc-search');
-    hl.delete('doc-search-current');
-    docMatchRangesRef.current = [];
-  }, [supportsHighlightApi]);
-
-  // 검색 실행: 좌(원본)+우(수정본) 패널 모두 검색 후 합쳐 순회
-  const runDocSearch = useCallback(
-    (query: string, focusIndex = 0) => {
+  // 검색 매치 강조: "현재 매치 글자만" <span.doc-search-hit>로 감싸 정확히 색칠 + 스크롤.
+  // 블록 전체 색칠 방지. 매번 새로 찾아 한 곳만 감싸므로 Range 무효화 문제 없음.
+  const applyMatch = useCallback(
+    (query: string, rawIdx: number) => {
+      if (searchRafRef.current) {
+        cancelAnimationFrame(searchRafRef.current);
+        searchRafRef.current = 0;
+      }
       const q = query.trim();
       if (!q) {
-        clearDocHighlights();
+        unwrapSearchMark();
         setDocMatchCount(0);
         setDocMatchIndex(0);
         return;
       }
-      const left = findRangesInPanel(docOriginalRef.current, q);
-      const right = findRangesInPanel(docModifiedRef.current, q);
-      const all = [...left, ...right];
-      docMatchRangesRef.current = all;
+      const all = [
+        ...findRangesInPanel(docOriginalRef.current, q),
+        ...findRangesInPanel(docModifiedRef.current, q),
+      ];
       setDocMatchCount(all.length);
       if (all.length === 0) {
-        applyDocHighlights([], 0);
+        unwrapSearchMark();
         setDocMatchIndex(0);
         return;
       }
-      const idx = ((focusIndex % all.length) + all.length) % all.length;
+      const idx = ((rawIdx % all.length) + all.length) % all.length;
       setDocMatchIndex(idx);
-      applyDocHighlights(all, idx);
-      const target = all[idx];
-      const el =
-        target.startContainer.parentElement ??
-        (target.startContainer as HTMLElement | null);
-      el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      // 강조 DOM 변경은 "다음 프레임"에 적용한다. setDocMatchCount/Index로 인한 리렌더에서
+      // React가 패널 innerHTML을 다시 그리며 우리가 넣은 span을 지우는데, rAF는 그 커밋 "후"에
+      // 실행되므로 여기서 감싼 span은 살아남는다. (재렌더 후 DOM 기준 다시 찾아 감쌈)
+      searchRafRef.current = requestAnimationFrame(() => {
+        searchRafRef.current = 0;
+        unwrapSearchMark();
+        const fresh = [
+          ...findRangesInPanel(docOriginalRef.current, q),
+          ...findRangesInPanel(docModifiedRef.current, q),
+        ];
+        const r = fresh[idx] ?? fresh[fresh.length - 1];
+        if (!r) return;
+        try {
+          const mark = document.createElement('span');
+          mark.className = 'doc-search-hit';
+          r.surroundContents(mark);
+          currentMatchElRef.current = mark;
+          mark.scrollIntoView({ block: 'center', inline: 'center' });
+        } catch {
+          (r.startContainer.parentElement as HTMLElement | null)?.scrollIntoView({
+            block: 'center',
+          });
+        }
+      });
     },
-    [findRangesInPanel, applyDocHighlights, clearDocHighlights],
+    [findRangesInPanel, unwrapSearchMark],
+  );
+
+  const clearDocHighlights = useCallback(() => {
+    unwrapSearchMark();
+    docMatchRangesRef.current = [];
+  }, [unwrapSearchMark]);
+
+  // 검색 실행(입력 시): query 기준으로 찾아 첫 매치 강조
+  const runDocSearch = useCallback(
+    (query: string, focusIndex = 0) => {
+      applyMatch(query, focusIndex);
+    },
+    [applyMatch],
   );
 
   const navigateDocMatch = useCallback(
     (direction: 'prev' | 'next') => {
-      const total = docMatchRangesRef.current.length;
-      if (total === 0) return;
-      const next =
-        direction === 'next'
-          ? (docMatchIndex + 1) % total
-          : (docMatchIndex - 1 + total) % total;
-      setDocMatchIndex(next);
-      applyDocHighlights(docMatchRangesRef.current, next);
-      const target = docMatchRangesRef.current[next];
-      const el =
-        target.startContainer.parentElement ??
-        (target.startContainer as HTMLElement | null);
-      el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      if (docMatchCount === 0) return;
+      const next = direction === 'next' ? docMatchIndex + 1 : docMatchIndex - 1;
+      applyMatch(docSearch, next); // applyMatch 내부에서 wrap-around 처리
     },
-    [docMatchIndex, applyDocHighlights],
+    [docMatchCount, docMatchIndex, docSearch, applyMatch],
   );
 
   // 변경 칸(data-orig 보유) 점프
@@ -817,8 +831,9 @@ const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function DiffVi
       {/* 문서 모드: 표 보존 HTML 좌우 렌더 (문서 모드 전용 — 항상 렌더) */}
       <>
           {htmlLoading && (
-            <div style={{ display: 'flex', justifyContent: 'center', padding: 48 }}>
-              <Spin tip="문서를 불러오는 중..." />
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, padding: 48 }}>
+              <Spin />
+              <Text type="secondary">문서를 불러오는 중...</Text>
             </div>
           )}
           {!htmlLoading && htmlError && (
@@ -832,11 +847,12 @@ const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function DiffVi
             <Card size="small" style={{ marginBottom: 2 }} styles={{ body: { padding: '8px 12px' } }}>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'center' }}>
                 <Space size={6}>
+                  <Text type="secondary" style={{ fontSize: 12 }}>🔍 검색:</Text>
                   <Input
                     allowClear
                     size="small"
-                    style={{ width: 220 }}
-                    placeholder="문서에서 텍스트 검색"
+                    style={{ width: 200 }}
+                    placeholder="문서에서 텍스트 찾기"
                     value={docSearch}
                     onChange={(e) => {
                       const v = e.target.value;
@@ -863,37 +879,9 @@ const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function DiffVi
                   </Button>
                   {docSearch.trim() && (
                     <Text type="secondary" style={{ fontSize: 12 }}>
-                      {docMatchCount > 0 ? `${docMatchIndex + 1}/${docMatchCount}` : '0/0'}
+                      {docMatchCount > 0 ? `${docMatchIndex + 1}/${docMatchCount}` : '검색 결과 없음'}
                     </Text>
                   )}
-                  {docSearch.trim() && !supportsHighlightApi && (
-                    <Text type="warning" style={{ fontSize: 12 }}>
-                      (이 브라우저는 하이라이트 미지원 — 위치 이동만 동작)
-                    </Text>
-                  )}
-                </Space>
-
-                <div style={{ width: 1, height: 18, background: '#f0f0f0' }} />
-
-                <Space size={6}>
-                  <Text type="secondary" style={{ fontSize: 12 }}>변경 칸:</Text>
-                  <Button
-                    size="small"
-                    icon={<UpOutlined />}
-                    disabled={docChangeCount === 0}
-                    onClick={() => navigateDocChange('prev')}
-                  >
-                    이전
-                  </Button>
-                  <Button
-                    size="small"
-                    icon={<DownOutlined />}
-                    disabled={docChangeCount === 0}
-                    onClick={() => navigateDocChange('next')}
-                  >
-                    다음
-                  </Button>
-                  <Text type="secondary" style={{ fontSize: 12 }}>{docChangeCount}개</Text>
                 </Space>
               </div>
             </Card>
@@ -940,7 +928,27 @@ const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function DiffVi
                   fontSize: 13,
                   color: '#1677ff',
                 }}>
-                  <span>{modifiedTitle} (칸을 클릭해 직접 수정)</span>
+                  <span>{modifiedTitle} (클릭해 수정)</span>
+                  <Space size={4}>
+                    <Text type="secondary" style={{ fontSize: 12, fontWeight: 400 }}>변경 칸:</Text>
+                    <Button
+                      size="small"
+                      icon={<UpOutlined />}
+                      disabled={docChangeCount === 0}
+                      onClick={() => navigateDocChange('prev')}
+                    >
+                      이전
+                    </Button>
+                    <Button
+                      size="small"
+                      icon={<DownOutlined />}
+                      disabled={docChangeCount === 0}
+                      onClick={() => navigateDocChange('next')}
+                    >
+                      다음
+                    </Button>
+                    <Text type="secondary" style={{ fontSize: 12, fontWeight: 400 }}>{docChangeCount}개</Text>
+                  </Space>
                 </div>
                 <div
                   key={processedModifiedHtml || 'empty'}
@@ -1078,14 +1086,20 @@ const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function DiffVi
             .doc-modified-editable .doc-revert-btn[data-toggle-state="other"] svg {
               transform: scaleX(-1);
             }
-            /* 문서 모드 검색 하이라이트(CSS Custom Highlight API, 비파괴적) */
-            ::highlight(doc-search) {
-              background-color: #fff3a3;
-              color: inherit;
+            /* 문서 모드 검색 현재 매치 강조(매치된 글자만 span으로 감싸 색칠) */
+            .doc-search-hit {
+              background: #ffe066 !important;
+              color: #000 !important;
+              font-weight: 700 !important;
+              padding: 1px 2px;
+              border-radius: 3px;
+              box-shadow: 0 0 0 3px #fa541c, 0 0 10px 3px rgba(250, 84, 28, 0.55);
+              scroll-margin: 120px;
+              animation: docSearchPulse 0.6s ease-in-out 3;
             }
-            ::highlight(doc-search-current) {
-              background-color: #ffa940;
-              color: #000;
+            @keyframes docSearchPulse {
+              0%, 100% { background: #ffe066; box-shadow: 0 0 0 3px #fa541c, 0 0 10px 3px rgba(250,84,28,0.55); }
+              50% { background: #ff7a45; box-shadow: 0 0 0 4px #d4380d, 0 0 16px 5px rgba(212,56,13,0.8); }
             }
           `,
         }}
@@ -1123,7 +1137,14 @@ const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function DiffVi
       <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
         <Space>
           {onDownloadHwp && (
-            <Button type="primary" icon={<FileWordOutlined />} onClick={onDownloadHwp}>수정본 HWP 다운로드</Button>
+            <Button
+              data-guide="diff-download"
+              type="primary"
+              icon={<FileWordOutlined />}
+              onClick={onDownloadHwp}
+            >
+              수정본 HWP 다운로드
+            </Button>
           )}
         </Space>
       </div>

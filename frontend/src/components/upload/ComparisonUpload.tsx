@@ -20,6 +20,7 @@ import {
   CheckCircleOutlined,
   ExclamationCircleOutlined,
   WarningOutlined,
+  QuestionCircleOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import type {
@@ -238,22 +239,28 @@ export default function ComparisonUpload({
   function renderSectionBadge(section: ComparisonSectionInfo) {
     if (section.status === 'parsed') {
       return (
-        <Tag color="green" icon={<CheckCircleOutlined />}>
-          추출 {section.extracted_count}건
-        </Tag>
+        <Tooltip title="값이 인식돼 교체 후보가 생성된 구간입니다.">
+          <Tag color="green" icon={<CheckCircleOutlined />} style={{ cursor: 'help' }}>
+            추출 {section.extracted_count}건
+          </Tag>
+        </Tooltip>
       );
     }
     if (section.status === 'empty') {
       return (
-        <Tag color="orange" icon={<WarningOutlined />}>
-          확인 필요
-        </Tag>
+        <Tooltip title="값을 찾지 못한 구간입니다. 직접 확인하세요.">
+          <Tag color="orange" icon={<WarningOutlined />} style={{ cursor: 'help' }}>
+            확인 필요
+          </Tag>
+        </Tooltip>
       );
     }
     return (
-      <Tag color="default" style={{ color: '#8c8c8c' }}>
-        건너뜀(면적 외)
-      </Tag>
+      <Tooltip title="면적 등 대상 외라 제외된 구간입니다.">
+        <Tag color="default" style={{ color: '#8c8c8c', cursor: 'help' }}>
+          건너뜀(면적 외)
+        </Tag>
+      </Tooltip>
     );
   }
 
@@ -369,26 +376,28 @@ export default function ComparisonUpload({
       />
 
       {/* 파일 업로드 영역 */}
-      <Dragger
-        name="file"
-        multiple={false}
-        accept=".xlsx,.xls"
-        showUploadList={false}
-        beforeUpload={handleFile}
-        disabled={previewLoading}
-      >
-        <p className="ant-upload-drag-icon">
-          <FileExcelOutlined style={{ fontSize: 32, color: '#1677ff' }} />
-        </p>
-        <p className="ant-upload-text">
-          대비표 엑셀 파일을 드래그하거나 클릭하여 업로드하세요
-        </p>
-        <p className="ant-upload-hint">
-          {fileName
-            ? `선택된 파일: ${fileName}`
-            : 'XLSX 형식 지원 — 업로드 시 자동으로 변경 목록을 미리봅니다'}
-        </p>
-      </Dragger>
+      <div data-guide="comparison-upload">
+        <Dragger
+          name="file"
+          multiple={false}
+          accept=".xlsx,.xls"
+          showUploadList={false}
+          beforeUpload={handleFile}
+          disabled={previewLoading}
+        >
+          <p className="ant-upload-drag-icon">
+            <FileExcelOutlined style={{ fontSize: 32, color: '#1677ff' }} />
+          </p>
+          <p className="ant-upload-text">
+            대비표 엑셀 파일을 드래그하거나 클릭하여 업로드하세요
+          </p>
+          <p className="ant-upload-hint">
+            {fileName
+              ? `선택된 파일: ${fileName}`
+              : 'XLSX 형식 지원 — 업로드 시 자동으로 변경 목록을 미리봅니다'}
+          </p>
+        </Dragger>
+      </div>
 
       {/* 미리보기 결과 */}
       {rows.length > 0 && (
@@ -446,6 +455,25 @@ export default function ComparisonUpload({
                   label: (
                     <Space size={8}>
                       <Text strong>구간 처리 현황</Text>
+                      <Tooltip
+                        title={
+                          <span style={{ fontSize: 12, lineHeight: 1.6 }}>
+                            대비표의 각 구간(표/섹션)이 어떻게 처리됐는지
+                            요약입니다.
+                            <br />
+                            <b>추출 N건</b> = 값이 인식돼 교체 후보 생성
+                            <br />
+                            <b>확인 필요</b> = 값을 못 찾음(직접 확인)
+                            <br />
+                            <b>건너뜀</b> = 면적 등 대상 외라 제외
+                          </span>
+                        }
+                      >
+                        <QuestionCircleOutlined
+                          style={{ color: '#8c8c8c', cursor: 'help' }}
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                      </Tooltip>
                       <Text type="secondary" style={{ fontSize: 12 }}>
                         총 {sections.length}개 구간
                       </Text>
@@ -502,6 +530,7 @@ export default function ComparisonUpload({
 
           {/* 변경 목록: 표(sheet) 단위로 그룹핑하여 맥락이 드러나게 */}
           <div
+            data-guide="comparison-result"
             style={{
               display: 'flex',
               flexDirection: 'column',
@@ -555,7 +584,10 @@ export default function ComparisonUpload({
           </div>
 
           {/* 적용 버튼 */}
-          <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+          <div
+            data-guide="comparison-apply-area"
+            style={{ display: 'flex', justifyContent: 'flex-end' }}
+          >
             <Space>
               <Text type="secondary" style={{ fontSize: 12 }}>
                 {selectedCount}건 선택됨

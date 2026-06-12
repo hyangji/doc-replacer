@@ -2,8 +2,11 @@
 
 import React from 'react';
 import { Layout, Menu, Button } from 'antd';
-import { SettingOutlined, FileTextOutlined } from '@ant-design/icons';
+import { QuestionCircleOutlined, FileTextOutlined } from '@ant-design/icons';
 import { useRouter, usePathname } from 'next/navigation';
+
+// 편집기 페이지에서 헤더의 '사용 가이드' 버튼 → 편집기로 가이드 시작 신호 전달용 이벤트명
+export const OPEN_GUIDE_EVENT = 'docreplacer:open-guide';
 
 const { Header: AntHeader } = Layout;
 
@@ -49,11 +52,17 @@ export default function Header() {
         style={{ flex: 1, borderBottom: 'none' }}
       />
 
-      <Button
-        type="text"
-        icon={<SettingOutlined />}
-        style={{ marginLeft: 'auto' }}
-      />
+      {/* 문서 작업·편집기 화면에서 '사용 가이드' 버튼 노출. 클릭 시 커스텀 이벤트 발신 → 해당 페이지가 수신해 투어 시작 */}
+      {(pathname === '/documents' || pathname.startsWith('/editor')) && (
+        <Button
+          type="primary"
+          icon={<QuestionCircleOutlined />}
+          style={{ marginLeft: 'auto', background: '#722ed1', borderColor: '#722ed1' }}
+          onClick={() => window.dispatchEvent(new CustomEvent(OPEN_GUIDE_EVENT))}
+        >
+          사용 가이드
+        </Button>
+      )}
     </AntHeader>
   );
 }

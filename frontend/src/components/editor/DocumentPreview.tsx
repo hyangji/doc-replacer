@@ -48,6 +48,14 @@ export default function DocumentPreview({ documentId, version }: DocumentPreview
 
   return (
     <div style={{ height: 'calc(100vh - 220px)', display: 'flex', flexDirection: 'column' }}>
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 12 }}
+        message="현재 최신 상태의 문서입니다 (원본 아님)"
+        description="대비표 적용·편집한 내용이 모두 반영된 모습입니다. 원본과 무엇이 바뀌었는지 비교하려면 'Diff 비교' 탭을, 원본으로 되돌리려면 상단 '원본으로 초기화'를 이용하세요."
+      />
+
       {(hasError || isEmpty) && (
         <Alert
           message="표 서식을 불러오지 못했습니다. 편집 탭에서 텍스트로 확인하세요."

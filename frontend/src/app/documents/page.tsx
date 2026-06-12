@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useCallback } from 'react';
+import React, { useEffect, useCallback, useRef } from 'react';
 import { Typography, Table, Card, Space, Button, Tag, message, Modal, Alert } from 'antd';
 import {
   FileTextOutlined,
@@ -10,14 +10,16 @@ import {
 import type { ColumnsType } from 'antd/es/table';
 import { useRouter } from 'next/navigation';
 import { useDocumentStore } from '@/lib/stores/documentStore';
-import { uploadDocument } from '@/lib/api';
 import type { DocumentListItem } from '@/types/document';
 import LoadingSpinner from '@/components/common/LoadingSpinner';
 import FileUpload from '@/components/upload/FileUpload';
 import PageHeader from '@/components/common/PageHeader';
+import { useDocumentsGuide } from '@/lib/useDocumentsGuide';
+import { OPEN_GUIDE_EVENT } from '@/components/layout/Header';
 import type { UploadFile } from 'antd';
 
-const { Title } = Typography;
+// 첫 방문 자동 투어 1회 노출 여부 저장 키
+const DOCS_GUIDE_SEEN_KEY = 'docreplacer_docs_guide_seen';
 
 const fileTypeColorMap: Record<string, string> = {
   hwp: 'blue',
@@ -31,10 +33,30 @@ const fileTypeColorMap: Record<string, string> = {
 export default function DocumentsPage() {
   const router = useRouter();
   const { documents, isLoading, error, fetchDocuments, deleteDocument: deleteDoc } = useDocumentStore();
+  const { startGuide } = useDocumentsGuide();
+  const autoGuideFiredRef = useRef(false);
 
   useEffect(() => {
     fetchDocuments();
   }, [fetchDocuments]);
+
+  // 헤더 '사용 가이드' 버튼(커스텀 이벤트) 수신 → 투어 시작
+  useEffect(() => {
+    const handler = () => startGuide();
+    window.addEventListener(OPEN_GUIDE_EVENT, handler);
+    return () => window.removeEventListener(OPEN_GUIDE_EVENT, handler);
+  }, [startGuide]);
+
+  // 첫 방문 시 자동 투어 1회(진입 페이지 온보딩)
+  useEffect(() => {
+    if (autoGuideFiredRef.current) return;
+    if (typeof window === 'undefined') return;
+    if (window.localStorage.getItem(DOCS_GUIDE_SEEN_KEY)) return;
+    autoGuideFiredRef.current = true;
+    window.localStorage.setItem(DOCS_GUIDE_SEEN_KEY, '1');
+    const t = window.setTimeout(() => startGuide(), 500);
+    return () => window.clearTimeout(t);
+  }, [startGuide]);
 
   const handleUploadComplete = useCallback(
     (file: UploadFile) => {
@@ -150,7 +172,7 @@ export default function DocumentsPage() {
       />
 
       <Space direction="vertical" size="large" style={{ width: '100%' }}>
-        <Card title="원본 문서 업로드" className="dashboard-card">
+        <Card title="원본 문서 업로드" className="dashboard-card" data-guide="upload">
           <FileUpload
             onUploadComplete={handleUploadComplete}
             acceptTypes={['.hwp', '.hwpx', '.xlsx', '.xls', '.docx', '.doc']}
@@ -163,7 +185,7 @@ export default function DocumentsPage() {
           </Card>
         )}
 
-        <Card title="작업 문서" className="dashboard-card">
+        <Card title="작업 문서" className="dashboard-card" data-guide="doc-list">
           <Alert
             type="info"
             showIcon

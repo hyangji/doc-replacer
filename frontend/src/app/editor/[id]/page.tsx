@@ -15,8 +15,14 @@ import DiffViewer, { type DiffViewerHandle } from '@/components/diff/DiffViewer'
 import ComparisonUpload from '@/components/upload/ComparisonUpload';
 import PageHeader from '@/components/common/PageHeader';
 import LoadingSpinner from '@/components/common/LoadingSpinner';
+import { OPEN_GUIDE_EVENT } from '@/components/layout/Header';
 import { useDocumentStore } from '@/lib/stores/documentStore';
+import { useEditorGuide } from '@/lib/useEditorGuide';
+import { GUIDED_FLOW_KEY } from '@/lib/useDocumentsGuide';
 import * as api from '@/lib/api';
+
+// 첫 방문 자동 투어 1회 노출 여부 저장 키
+const GUIDE_SEEN_KEY = 'docreplacer_editor_guide_seen';
 
 export default function EditorPage() {
   const params = useParams();
@@ -40,6 +46,23 @@ export default function EditorPage() {
   const [comparisonKey, setComparisonKey] = useState(0);
   const diffViewerRef = useRef<DiffViewerHandle>(null);
 
+  // 인앱 사용 가이드(driver.js). setActiveTab + 적용여부(상태 적응형 분기)를 넘김.
+  const { startGuide } = useEditorGuide({
+    setActiveTab,
+    isApplied:
+      diffData != null && diffData.original_text !== diffData.modified_text,
+  });
+  // 첫 방문 자동 투어 1회 실행 여부(데이터 로드 후 한 번만)
+  const autoGuideFiredRef = useRef(false);
+  // 언마운트 여부(지연 실행 가드). 마운트 시 true 복구(StrictMode 이중 invoke 대비).
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
   useEffect(() => {
     if (!documentId) return;
     let cancelled = false;
@@ -56,6 +79,34 @@ export default function EditorPage() {
       cancelled = true;
     };
   }, [documentId, fetchDocument, setDiffData]);
+
+  // 첫 방문 자동 투어: 문서 로드 후, localStorage 키가 없으면 1회 자동 실행.
+  // 탭/요소 렌더 후 실행하도록 약간 지연한다.
+  useEffect(() => {
+    if (autoGuideFiredRef.current) return;
+    if (!currentDocument) return;
+    if (typeof window === 'undefined') return;
+    // 문서 작업 가이드에서 원본 업로드로 넘어온 경우(guided_flow)면 seen 여부와 무관하게 이어서 시작.
+    // 그 외엔 첫 방문일 때만 자동 시작.
+    const guidedFlow = window.sessionStorage.getItem(GUIDED_FLOW_KEY);
+    if (!guidedFlow && window.localStorage.getItem(GUIDE_SEEN_KEY)) return;
+    autoGuideFiredRef.current = true;
+    window.sessionStorage.removeItem(GUIDED_FLOW_KEY);
+    window.localStorage.setItem(GUIDE_SEEN_KEY, '1');
+    // 주의: cleanup으로 clearTimeout 하지 않는다. currentDocument가 600ms 내 또 바뀌어
+    // effect가 재실행되면 타이머가 취소되고, 재진입은 fired=true로 막혀 영영 실행 안 되는 버그 방지.
+    // 대신 언마운트 가드(mountedRef)로 안전 처리.
+    window.setTimeout(() => {
+      if (mountedRef.current) startGuide();
+    }, 600);
+  }, [currentDocument, startGuide]);
+
+  // 헤더의 '사용 가이드' 버튼(커스텀 이벤트) 수신 → 투어 시작
+  useEffect(() => {
+    const handler = () => startGuide();
+    window.addEventListener(OPEN_GUIDE_EVENT, handler);
+    return () => window.removeEventListener(OPEN_GUIDE_EVENT, handler);
+  }, [startGuide]);
 
   const handleReset = useCallback(() => {
     Modal.confirm({
@@ -180,7 +231,7 @@ export default function EditorPage() {
 
   // 상태 배지 + '원본으로 초기화' + '새 문서 열기'(다른 원본 HWP 업로드/선택 진입점)
   const headerActions = (
-    <Space size={8} align="center">
+    <Space size={8} align="center" data-guide="header-actions">
       {statusBadge}
       <Button
         size="small"
@@ -251,8 +302,9 @@ export default function EditorPage() {
           <DiffOutlined /> Diff 비교
         </span>
       ),
-      children:
-        diffData == null ? (
+      children: (
+        <div data-guide="diff-area">
+        {diffData == null ? (
           <div style={{ padding: 48, textAlign: 'center' }}>
             <Spin tip="비교 데이터를 불러오는 중..." />
           </div>
@@ -290,7 +342,9 @@ export default function EditorPage() {
             onDocSaved={handleDocSaved}
             onDocDirtyChange={setDocDirty}
           />
-        ),
+        )}
+        </div>
+      ),
     },
   ];
 
@@ -321,6 +375,7 @@ export default function EditorPage() {
         onChange={setActiveTab}
         items={tabItems}
         style={{ flex: 1 }}
+        data-guide="tabs"
       />
     </div>
   );
